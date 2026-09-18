@@ -230,4 +230,87 @@
   .status-item:hover {
     @apply bg-base-750 text-ink-dim;
   }
+
+  /* Dismissing a tab. Hidden until the tab is under the cursor, because a row
+     of close buttons reads as a row of buttons rather than as a row of tabs. */
+  .tab-close {
+    @apply grid h-4 w-4 place-items-center rounded-sm text-ink-faint
+           opacity-0 transition-opacity duration-100;
+  }
+
+  button:hover > .tab-close {
+    @apply opacity-100;
+  }
+
+  .tab-close:hover {
+    @apply bg-base-700 text-ink;
+  }
+
+  /* ── The settings page ───────────────────────────────────────────────────
+     One set of field chrome, repeated by every field of every section a
+     module registers. This is the case the component layer is for. */
+
+  .settings-nav {
+    @apply flex w-full items-center gap-2.5 rounded px-2 py-1.5 text-left
+           text-[12.5px] text-ink-dim transition-colors duration-75;
+  }
+
+  .settings-nav:hover {
+    @apply bg-base-800 text-ink;
+  }
+
+  .settings-nav.is-active {
+    @apply bg-base-750 text-ink;
+  }
+
+  .settings-nav.is-active svg {
+    @apply text-accent;
+  }
+
+  .settings-label {
+    @apply mb-1.5 block text-[12.5px] font-medium text-ink;
+  }
+
+  .settings-input {
+    @apply block w-full rounded border border-line bg-base-950 px-2.5 py-1.5
+           text-[12.5px] text-ink transition-colors duration-75;
+  }
+
+  .settings-input:hover {
+    @apply border-base-600;
+  }
+
+  .settings-input:focus {
+    @apply border-accent-dim outline-none;
+  }
+
+  .settings-button {
+    @apply shrink-0 rounded border border-line bg-base-800 px-3 py-1.5
+           text-[12.5px] text-ink-dim transition-colors duration-75;
+  }
+
+  .settings-button:hover {
+    @apply border-base-600 text-ink;
+  }
+
+  .settings-help {
+    @apply mt-1.5 text-[11.5px] leading-relaxed text-ink-faint;
+  }
+
+  .settings-check {
+    @apply h-3.5 w-3.5 shrink-0 accent-accent;
+  }
+
+  .settings-save {
+    @apply rounded border border-accent-dim bg-accent-deep px-4 py-1.5
+           text-[12.5px] text-ink transition-colors duration-75;
+  }
+
+  .settings-save:hover {
+    @apply border-accent bg-base-700;
+  }
+
+  .settings-save[data-disabled] {
+    @apply pointer-events-none border-line bg-base-800 text-ink-faint;
+  }
 }

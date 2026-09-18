@@ -76,7 +76,7 @@ M.register {
       id: "settings"
       icon: "settings"
       title: "Settings"
-      action: "nui.set('dialog', 'settings')"
+      action: "neutrino.invoke('shell:settings')"
     }
   }
 }

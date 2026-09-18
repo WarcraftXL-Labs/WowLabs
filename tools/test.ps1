@@ -7,7 +7,7 @@
 # Nobody needs to be present.
 
 param(
-    [ValidateSet("all", "shell")]
+    [ValidateSet("all", "shell", "settings")]
     [string]$Only = "all"
 )
 
@@ -31,7 +31,7 @@ if (-not (Test-Path $DistDir)) {
 $env:LUA_PATH = "$DistDir\?.lua;$DistDir\?\init.lua;$DistDir\tests\?.lua;$RocksDir\share\lua\5.1\?.lua;$RocksDir\share\lua\5.1\?\init.lua;"
 $env:LUA_CPATH = "$RocksDir\lib\lua\5.1\?.dll;"
 
-$suites = @("shell")
+$suites = @("shell", "settings")
 if ($Only -ne "all") { $suites = @($Only) }
 
 $failed = @()

@@ -9,7 +9,9 @@
 Neutrino = require "neutrino"
 menus = require "shell.menus"
 page = require "shell.page"
+settings = require "shell.settings"
 tools = require "shell.tools"
+workspace = require "workspace"
 
 async = Neutrino.async
 json = Neutrino.json
@@ -24,7 +26,9 @@ M = {}
 -- given, so a key that appears later is a key no expression can read.
 ---@return table
 initial_state = ->
-  {
+  open = workspace.current!
+
+  state = {
     -- Chrome
     menu: ""                  -- the open menu, or ""
     maximized: false
@@ -37,8 +41,9 @@ initial_state = ->
     tool: tools.first!
 
     -- Workspace
-    workspace: ""             -- the folder, shown in the title bar
-    build: ""                 -- the client build it was opened as
+    workspace: open and open.path or ""   -- the folder, shown in the title bar
+    build: open and open.build or ""      -- the client build it was opened as
+    recent: workspace.recent!             -- the File menu's list
     status: "Ready"
 
     -- Work
@@ -53,6 +58,13 @@ initial_state = ->
     icon_maximize: page.icon "maximize"
     icon_restore: page.icon "restore"
   }
+
+  -- The settings page's keys, from the sections that registered. Merged here
+  -- rather than declared here: the shell does not know what a module's settings
+  -- are, and a key it had to be told about would be a key modules could not add.
+  state[key] = value for key, value in pairs settings.state!
+
+  state
 
 --- Serves the shell and opens the window.
 ---@param app App
@@ -141,20 +153,67 @@ M.mount = (app, server) ->
 
         log.warn "shortcut %s: %s", item.accelerator, tostring err unless ok
 
-    -- ── Placeholders ──────────────────────────────────────────────────────
+    -- ── The workspace ─────────────────────────────────────────────────────
     --
-    -- Wired so the interface is honest about what exists: a menu entry that
-    -- does nothing at all is worse than one that says so.
+    -- The chrome follows the model rather than being set alongside it. A title
+    -- bar written at the same moment as the workspace opens is a title bar that
+    -- is wrong the first time anything else opens one.
+
+    workspace.on_change (open) ->
+      state\set "workspace", open and open.path or ""
+      state\set "build", open and open.build or ""
+      state\set "recent", workspace.recent!
+      state\set "status", open and "Workspace open" or "No workspace"
+
+    -- Reports failure rather than raising, and says so on the status bar: a
+    -- folder that has gone missing since it was last opened is ordinary.
+    open_path = (path) ->
+      opened, err = workspace.open path
+      unless opened
+        state\set "status", "Could not open: #{tostring err}"
+        return false
+
+      -- Opened, but the settings could not be written. The workspace is usable
+      -- and the next launch will not remember it, which is worth saying.
+      state\set "status", "Opened, but not saved: #{err}" if err
+      true
 
     window\handle "shell:open-workspace", ->
       async.run ->
         paths = window\show_folder_dialog { title: "Open workspace" }
         return unless paths and paths[1]
-
-        state\set "workspace", paths[1]
-        state\set "status", "Workspace opened"
-        log.info "workspace opened: %s", paths[1]
+        open_path paths[1]
       nil
+
+    window\handle "shell:open-recent", (path) ->
+      return nil unless type(path) == "string"
+      open_path path
+      nil
+
+    window\handle "shell:close-workspace", ->
+      ok, err = workspace.close!
+      state\set "status", "Could not save: #{tostring err}" unless ok
+      nil
+
+    -- ── The work area ─────────────────────────────────────────────────────
+
+    window\handle "shell:close-tab", (id) ->
+      tabs = state\get("tabs") or {}
+      kept = [tab for tab in *tabs when tab.id != id]
+      state\set "tabs", json.array kept
+
+      -- Falls back to whatever is left rather than to nothing, so closing one
+      -- of several tabs does not drop you on the empty state.
+      if state\get("active_tab") == id
+        state\set "active_tab", kept[1] and kept[1].id or ""
+      nil
+
+    settings.mount window, state
+
+    -- ── Placeholders ──────────────────────────────────────────────────────
+    --
+    -- Wired so the interface is honest about what exists: a menu entry that
+    -- does nothing at all is worse than one that says so.
 
     for channel in *{ "shell:save", "shell:save-all", "shell:undo", "shell:redo" }
       do
@@ -175,6 +234,15 @@ M.mount = (app, server) ->
       window\show!
       window\maximize!
       sync_maximized!
+
+      -- Only now: the store is inlined into the document, so before the page
+      -- has loaded there is nothing for a listener to push to. The preference
+      -- is honoured here rather than inside the model, because "reopen at
+      -- startup" is a question about this window rather than about workspaces.
+      if workspace.setting "reopen"
+        workspace.restore!
+      else
+        state\set "status", "Ready"
 
       log.info "shell ready"
 

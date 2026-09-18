@@ -23,6 +23,7 @@
 
 etlua = require "etlua"
 menus = require "shell.menus"
+settings = require "shell.settings"
 tools = require "shell.tools"
 
 -- 16px, stroke-based, inheriting colour. Drawn here rather than fetched: a
@@ -80,6 +81,23 @@ SOURCE = [==[
             <% for _, item in ipairs(menu.items) do %>
               <% if item.separator then %>
                 <div class="menu-separator"></div>
+              <% elseif item.heading then %>
+                <div class="px-3 pb-0.5 pt-1.5 text-[11px] font-semibold
+                            uppercase tracking-wider text-ink-faint"><%= item.heading %></div>
+              <% elseif item.list then %>
+                <!-- A menu whose entries are not known when the page is built:
+                     a list in the store, one item per element. `entry` is the
+                     row, so the action is written against it. -->
+                <div data-for="entry in <%= item.list %>">
+                  <template>
+                    <button type="button" class="menu-item"
+                            data-on-click="menu = ''; <%= item.action %>">
+                      <span class="truncate" data-text="entry"></span>
+                    </button>
+                  </template>
+                </div>
+                <div class="menu-item" data-disabled
+                     data-show="<%= item.list %>.length === 0"><%= item.empty or "Nothing yet" %></div>
               <% else %>
                 <button type="button" class="menu-item"
                   <% if item.enabled then %>
@@ -186,9 +204,21 @@ SOURCE = [==[
                     data-class-text-ink="tab.id === active_tab"
                     data-on-click="active_tab = tab.id; tool = tab.tool || tool">
               <span data-text="tab.title"></span>
+              <!-- A page that takes the work area has to be dismissable, or it
+                   is a modal that forgot to draw its own frame. -->
+              <span class="tab-close"
+                    data-on-click="event.stopPropagation(); neutrino.invoke('shell:close-tab', tab.id)"
+              ><%- icon("close", 11) %></span>
             </button>
           </template>
         </div>
+      </div>
+
+      <!-- The settings page. A tab in the work area rather than a dialog, so
+           it stays open while something else is changed and comes back to
+           where it was. -->
+      <div class="flex min-h-0 flex-1" data-show="active_tab === 'settings'">
+        <%- settings_page %>
       </div>
 
       <!-- A tool with nothing open should say what to do next, not show an
@@ -257,6 +287,13 @@ render = ->
     error "shell template: #{err}" unless compiled
     template = compiled
 
-  template { menus: menus.bar, tools: tools.list, :icon }
+  -- The settings page is rendered in, not pushed through state: like a tool's
+  -- rail, what it contains is known once every section has registered.
+  template {
+    menus: menus.bar
+    tools: tools.list
+    settings_page: settings.render icon
+    :icon
+  }
 
 { :render, :icon, :ICONS }

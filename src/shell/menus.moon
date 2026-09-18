@@ -8,6 +8,13 @@
 --
 --   { label, action, accelerator?, enabled? }   a command
 --   { separator: true }                         a rule
+--   { heading: "Recent" }                       a caption
+--   { list: "recent", action, empty? }          one command per list element
+--
+-- A `list` entry names a key in the store rather than holding its own items:
+-- the recent workspaces are not known when the menu is built, and a menu that
+-- had to be rebuilt to show them would mean rebuilding the page. Inside its
+-- action, `entry` is the element.
 --
 -- `action` is JavaScript run in the page, because that is where a menu click
 -- lands. Reaching Lua is `invoke("channel")` like anywhere else.
@@ -25,9 +32,19 @@ M.bar = {
     items: {
       { label: "New workspace...", action: "nui.set('dialog', 'new-workspace')", accelerator: "Ctrl+Shift+N" }
       { label: "Open workspace...", action: "neutrino.invoke('shell:open-workspace')", accelerator: "Ctrl+O" }
+      { label: "Close workspace", action: "neutrino.invoke('shell:close-workspace')", enabled: "workspace !== ''" }
+      { separator: true }
+      { heading: "Recent" }
+      {
+        list: "recent"
+        empty: "Nothing opened yet"
+        action: "neutrino.invoke('shell:open-recent', entry)"
+      }
       { separator: true }
       { label: "Save", action: "neutrino.invoke('shell:save')", accelerator: "Ctrl+S", enabled: "dirty" }
       { label: "Save all", action: "neutrino.invoke('shell:save-all')", accelerator: "Ctrl+Alt+S", enabled: "dirty" }
+      { separator: true }
+      { label: "Settings", action: "neutrino.invoke('shell:settings')", accelerator: "Ctrl+," }
       { separator: true }
       { label: "Exit", action: "neutrino.invoke('shell:close')" }
     }

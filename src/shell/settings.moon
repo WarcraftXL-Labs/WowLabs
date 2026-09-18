@@ -1,0 +1,424 @@
+--- The settings page.
+--
+-- A page, not a modal. It takes the work area as a tab, so it stays open while
+-- the user changes something else and comes back — which is what settings are
+-- actually used for. A modal would force the sequence "stop, decide, dismiss"
+-- onto a task whose whole shape is "try it, look, adjust".
+--
+-- Sections register themselves, exactly as tools and menus do:
+--
+--     settings.register {
+--       id: "dbc"
+--       label: "Database"
+--       icon: "database"
+--       fields: {
+--         { type: "folder", path: "settings.dbc.definitions", label: "Definitions" }
+--       }
+--       values: -> { definitions: ... }       -- what the store starts from
+--       apply: (values) -> ok, err            -- what Save does
+--     }
+--
+-- "Workspace" below is built the same way and gets no help from the shell, so
+-- the general case and the module case are one mechanism rather than two.
+--
+-- **Saving is explicit.** A Save button per section, not a write per keystroke
+-- and not a write on blur. Every field here is a path or a build number — half
+-- of one is meaningless, and saving on blur would write that half to disk and
+-- then report a failure while the user was still tabbing. One button is one
+-- moment where the write either worked or did not, and one place to say so.
+---@module shell.settings
+
+Neutrino = require "neutrino"
+etlua = require "etlua"
+workspace = require "workspace"
+
+async = Neutrino.async
+json = Neutrino.json
+log = Neutrino.log
+
+M = {}
+
+--- Every registered section, in nav order.
+---@type table[]
+M.list = {}
+
+--- Adds a section. A second registration of the same id replaces the first, the
+--- way `tools.register` does, so reloading a module does not double its entry.
+---@param section table id, label, icon?, fields, values?, apply?
+---@return table The section.
+M.register = (section) ->
+  error "a settings section needs an id" unless section.id
+  error "a settings section needs a label" unless section.label
+
+  section.fields or= {}
+
+  for field in *section.fields
+    error "a settings field needs a path" unless field.path
+    error "a settings field needs a type" unless field.type
+
+  for index, existing in ipairs M.list
+    if existing.id == section.id
+      M.list[index] = section
+      return section
+
+  table.insert M.list, section
+  section
+
+--- Finds a section by id.
+---@param id string
+---@return table|nil
+M.find = (id) ->
+  for section in *M.list
+    return section if section.id == id
+  nil
+
+--- The id the page opens on: the first registered section.
+---@return string
+M.first = -> #M.list > 0 and M.list[1].id or ""
+
+--- The store keys the page reads.
+--
+-- Folded into `window.initial_state`, because the runtime only answers for keys
+-- it was given and a section's values are no exception: a field bound to a path
+-- that was never declared binds to nothing at all.
+---@return table
+M.state = ->
+  values = {}
+  for section in *M.list
+    values[section.id] = section.values and section.values! or {}
+
+  {
+    settings: values
+    settings_section: M.first!
+    settings_dirty: false
+    settings_error: ""
+    settings_status: ""
+  }
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Markup
+-- ═══════════════════════════════════════════════════════════════════════════
+
+SOURCE = [==[
+<div class="flex min-h-0 flex-1">
+
+  <!-- Sections, down the left. Always all of them: which one is showing is a
+       class, not a rebuild. -->
+  <nav class="flex w-52 shrink-0 flex-col gap-0.5 overflow-y-auto border-r
+              border-line bg-base-850 p-2">
+    <div class="px-2 pb-2 pt-1 text-[11px] font-semibold uppercase
+                tracking-wider text-ink-faint">Settings</div>
+    <% for _, section in ipairs(sections) do %>
+      <button type="button" class="settings-nav"
+              data-class-is-active="settings_section === '<%= section.id %>'"
+              data-on-click="settings_section = '<%= section.id %>'; settings_error = ''; settings_status = ''">
+        <%- icon(section.icon or "settings", 15) %>
+        <span><%= section.label %></span>
+      </button>
+    <% end %>
+  </nav>
+
+  <!-- The chosen one fills the rest. -->
+  <div class="flex min-w-0 flex-1 flex-col">
+    <% for _, section in ipairs(sections) do %>
+      <div class="flex min-h-0 flex-1 flex-col"
+           data-show="settings_section === '<%= section.id %>'">
+
+        <div class="min-h-0 flex-1 overflow-y-auto px-6 py-5">
+          <h2 class="mb-1 text-[14px] font-semibold text-ink"><%= section.label %></h2>
+          <% if section.description then %>
+            <p class="mb-5 max-w-xl text-[12.5px] leading-relaxed text-ink-dim"><%= section.description %></p>
+          <% else %>
+            <div class="mb-5"></div>
+          <% end %>
+
+          <div class="flex max-w-xl flex-col gap-4">
+            <% for _, field in ipairs(section.fields) do %>
+
+              <% if field.type == "toggle" then %>
+                <div>
+                  <label class="flex cursor-default items-center gap-2.5">
+                    <input type="checkbox" class="settings-check"
+                           data-model="<%= field.path %>"
+                           data-on-input="settings_dirty = true; settings_status = ''">
+                    <span class="text-[12.5px] text-ink"><%= field.label %></span>
+                  </label>
+                  <% if field.help then %>
+                    <p class="settings-help pl-[26px]"><%= field.help %></p>
+                  <% end %>
+                </div>
+
+              <% else %>
+                <div>
+                  <label class="settings-label"><%= field.label %></label>
+
+                  <% if field.type == "choice" then %>
+                    <select class="settings-input"
+                            data-model="<%= field.path %>"
+                            data-on-input="settings_dirty = true; settings_status = ''">
+                      <% for _, option in ipairs(field.options or {}) do %>
+                        <option value="<%= option.value %>"><%= option.label or option.value %></option>
+                      <% end %>
+                    </select>
+
+                  <% elseif field.type == "folder" then %>
+                    <div class="flex gap-2">
+                      <input type="text" spellcheck="false" class="settings-input flex-1"
+                             placeholder="<%= field.placeholder or "" %>"
+                             data-model="<%= field.path %>"
+                             data-on-input="settings_dirty = true; settings_status = ''">
+                      <button type="button" class="settings-button"
+                              data-on-click="neutrino.invoke('shell:settings-browse', '<%= field.path %>')">
+                        Browse...
+                      </button>
+                    </div>
+
+                  <% else %>
+                    <input type="text" spellcheck="false" class="settings-input"
+                           placeholder="<%= field.placeholder or "" %>"
+                           data-model="<%= field.path %>"
+                           data-on-input="settings_dirty = true; settings_status = ''">
+                  <% end %>
+
+                  <% if field.help then %>
+                    <p class="settings-help"><%= field.help %></p>
+                  <% end %>
+                </div>
+              <% end %>
+
+            <% end %>
+          </div>
+        </div>
+
+        <!-- One moment where the write worked or did not, and one place that
+             says which. -->
+        <footer class="flex shrink-0 items-center gap-3 border-t border-line
+                       bg-base-850 px-6 py-3">
+          <button type="button" class="settings-save"
+                  data-attr-data-disabled="!settings_dirty"
+                  data-on-click="neutrino.invoke('shell:settings-save', '<%= section.id %>')">
+            Save
+          </button>
+          <span class="text-[12px] text-ink-faint" data-show="settings_dirty">Unsaved changes</span>
+          <span class="text-[12px] text-ok"
+                data-show="!settings_dirty && settings_status !== '' && settings_error === ''"
+                data-text="settings_status"></span>
+          <span class="text-[12px] text-danger" data-show="settings_error !== ''"
+                data-text="settings_error"></span>
+        </footer>
+      </div>
+    <% end %>
+  </div>
+</div>
+]==]
+
+template = nil
+
+--- The whole page.
+--
+-- `icon` arrives as an argument rather than through a require: `shell.page`
+-- already requires this module in order to place the page, and requiring it
+-- back would be a cycle that resolves to a half-built table.
+---@param icon fun(name: string, size?: integer): string
+---@return string html
+M.render = (icon) ->
+  unless template
+    compiled, err = etlua.compile SOURCE
+    error "settings template: #{err}" unless compiled
+    template = compiled
+
+  template { sections: M.list, :icon }
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Behaviour
+-- ═══════════════════════════════════════════════════════════════════════════
+
+--- The tab the page occupies. One of them, reused.
+---@type string
+M.TAB = "settings"
+
+--- Wires the channels the page invokes.
+---@param window BrowserWindow
+---@param state State
+M.mount = (window, state) ->
+  -- Puts the section's saved values back into the store. What went to disk may
+  -- not be what was typed - a path gets normalised, a value gets rejected - and
+  -- showing the typed version after a save would be showing a lie.
+  refresh = (section) ->
+    return unless section.values
+    state\set "settings.#{section.id}", section.values!
+
+  -- True while this page is the one changing the model.
+  --
+  -- A model change announces itself whether or not it reached the disk, and a
+  -- save that got halfway announces the half that landed in memory. Letting the
+  -- listener below run then would overwrite the fields with what it managed to
+  -- apply and clear "unsaved changes" - telling the user their edits were saved
+  -- at the exact moment they were not. The two branches of the save handler say
+  -- what should happen instead, each for its own case.
+  applying = false
+
+  window\handle "shell:settings", ->
+    tabs = state\get("tabs") or {}
+
+    -- One settings tab, reused. Opening it twice should bring it forward, not
+    -- put a second copy of the same page beside the first.
+    already = false
+    for tab in *tabs
+      already = true if tab.id == M.TAB
+
+    unless already
+      table.insert tabs, { id: M.TAB, title: "Settings", tool: "workspace" }
+      state\set "tabs", json.array tabs
+
+    state\set "active_tab", M.TAB
+    state\set "settings_error", ""
+    state\set "settings_status", ""
+    nil
+
+  window\handle "shell:settings-browse", (path) ->
+    return nil unless type(path) == "string"
+
+    async.run ->
+      current = state\get path
+      chosen = window\show_folder_dialog {
+        title: "Choose a folder"
+        default_path: type(current) == "string" and current or ""
+      }
+      return unless chosen and chosen[1]
+
+      state\set path, chosen[1]
+      state\set "settings_dirty", true
+      state\set "settings_status", ""
+    nil
+
+  window\handle "shell:settings-save", (id) ->
+    section = M.find id
+    unless section
+      log.warn "settings: no section '%s'", tostring id
+      return nil
+
+    unless section.apply
+      state\set "settings_dirty", false
+      return nil
+
+    values = state\get("settings.#{section.id}") or {}
+
+    applying = true
+    -- A section's `apply` is a module's own code. It raising is that module's
+    -- bug, and showing it on the page beats taking the window down over it.
+    called, result, failure = pcall section.apply, values
+    applying = false
+
+    ok = called and result
+    err = if called then failure else tostring result
+
+    if ok
+      state\set "settings_error", ""
+      state\set "settings_status", "Saved"
+      state\set "settings_dirty", false
+      refresh section
+    else
+      -- Left dirty on purpose: nothing reached the disk, so the edits are still
+      -- the only copy and the button has to stay live.
+      state\set "settings_status", ""
+      state\set "settings_error", err and tostring(err) or "could not be saved"
+      log.warn "settings: %s could not be saved: %s", section.id, tostring err
+
+    nil
+
+  -- The page follows the model rather than the other way round, so a workspace
+  -- opened from the File menu shows up here without the menu knowing the page
+  -- exists.
+  workspace.on_change ->
+    return if applying
+
+    refresh (M.find "workspace")
+    state\set "settings_dirty", false
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Built in
+-- ═══════════════════════════════════════════════════════════════════════════
+
+locale_options = [{ value: code, label: code } for code in *workspace.LOCALES]
+
+M.register {
+  id: "workspace"
+  label: "Workspace"
+  icon: "home"
+  description: "A workspace is a folder of client files and the build they came
+    from. Every tool reads from it."
+
+  fields: {
+    {
+      type: "folder"
+      path: "settings.workspace.path"
+      label: "Client folder"
+      placeholder: "No workspace open"
+      help: "The folder holding Data\\ and the client executable."
+    }
+    {
+      type: "text"
+      path: "settings.workspace.build"
+      label: "Client build"
+      help: "3.3.5.12340 is retail 3.3.5a. A private server's client reports its
+        own, and the tool follows the client."
+    }
+    {
+      type: "choice"
+      path: "settings.workspace.locale"
+      label: "Locale"
+      options: locale_options
+      help: "Which folder under Data\\ holds the localised files."
+    }
+    {
+      type: "folder"
+      path: "settings.workspace.output"
+      label: "Output folder"
+      placeholder: "output, inside the workspace"
+      help: "Where modified files are written. Left empty, it is output\\ inside
+        the workspace, so nothing is written over the client by accident."
+    }
+    {
+      type: "toggle"
+      path: "settings.workspace.reopen"
+      label: "Reopen this workspace at startup"
+    }
+  }
+
+  values: ->
+    {
+      path: workspace.setting "path"
+      build: workspace.setting "build"
+      output: workspace.setting "output"
+      locale: workspace.setting "locale"
+      reopen: workspace.setting "reopen"
+    }
+
+  -- The path is applied through `open`, which is what checks the folder is
+  -- there. The rest go straight through, and the first failure is the one
+  -- reported: a half-applied section reported as a success is worse than one
+  -- reported as a failure.
+  apply: (values) ->
+    typed = type(values.path) == "string" and values.path or ""
+    current = workspace.current!
+    open_now = current and current.path or ""
+
+    if typed == ""
+      ok, err = workspace.close!
+      return nil, err unless ok
+    elseif typed != open_now
+      opened, err = workspace.open typed
+      return nil, err unless opened
+
+    for field in *{ "build", "output", "locale", "reopen" }
+      value = values[field]
+      continue if value == nil
+
+      ok, err = workspace.set field, value
+      return nil, err unless ok
+
+    true
+}
+
+M

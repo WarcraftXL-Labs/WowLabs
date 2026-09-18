@@ -7,7 +7,9 @@
 ---@module shell.window
 
 Neutrino = require "neutrino"
+menus = require "shell.menus"
 page = require "shell.page"
+tools = require "shell.tools"
 
 async = Neutrino.async
 json = Neutrino.json
@@ -28,8 +30,11 @@ initial_state = ->
     maximized: false
     side_open: true
     status_open: true
-    activity: "explorer"
     dialog: ""                -- the open dialog, or ""
+
+    -- The active category. Its rail, its strip and its panel are the ones
+    -- shown; everything else stays rendered and hidden.
+    tool: tools.first!
 
     -- Workspace
     workspace: ""             -- the folder, shown in the title bar
@@ -112,6 +117,30 @@ M.mount = (app, server) ->
     -- it to an edge maximises it, neither of which goes through our buttons.
     window\on "bounds-changed", -> sync_maximized!
 
+    -- ── Keyboard ──────────────────────────────────────────────────────────
+    --
+    -- Straight from the menu data, so a shortcut and the entry that shows it
+    -- cannot disagree. A menu that prints "Ctrl+S" beside a command that does
+    -- nothing when you press Ctrl+S is worse than one that prints nothing.
+
+    for menu in *menus.bar
+      for item in *menu.items
+        continue unless item.accelerator and item.action
+
+        -- Run through nui rather than as bare JavaScript: the action is
+        -- written against the store, the same as the menu entry's, and this is
+        -- what puts the store in scope. `enabled` guards it for the same
+        -- reason the entry is greyed out.
+        source = item.enabled and
+          "if (#{item.enabled}) { #{item.action} }" or item.action
+        script = "nui.run(#{json.encode source})"
+
+        ok, err = window\register_accelerator item.accelerator, ->
+          window\exec_js script
+          true
+
+        log.warn "shortcut %s: %s", item.accelerator, tostring err unless ok
+
     -- ── Placeholders ──────────────────────────────────────────────────────
     --
     -- Wired so the interface is honest about what exists: a menu entry that
@@ -140,8 +169,13 @@ M.mount = (app, server) ->
     window\on "did-finish-load", (detail) ->
       return unless detail.url and detail.url\match "^neutrino://app/"
 
-      sync_maximized!
+      -- Maximised on open. 1280x720 is the floor, not the working size: this
+      -- is a tool with four bars of chrome, and at its minimum there is barely
+      -- room for the thing you came to edit. Restoring gives that size back.
       window\show!
+      window\maximize!
+      sync_maximized!
+
       log.info "shell ready"
 
     window

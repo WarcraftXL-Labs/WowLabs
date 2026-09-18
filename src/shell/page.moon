@@ -1,25 +1,35 @@
 --- The shell's markup.
 --
--- One screen, built as a desktop application rather than as a page: a title bar
--- that is also the menu bar, an activity rail, a side panel, the work area, and
--- a status bar. Nothing scrolls except the panes meant to.
+-- Four bars and a work area, in the shape a development tool has rather than
+-- the shape a page has:
+--
+--   title bar      the application mark, the menus, the window buttons
+--   category bar   one icon per tool; the name appears on hover
+--   context bar    the active tool's own strip, when it asks for one
+--   action rail    the active tool's actions, down the left edge
+--
+-- Every tool's rail, strip and panel are rendered once and shown by which tool
+-- is active. Nothing pushes markup through state: what a tool contributes is
+-- known when the page is built, and a region that is not the active tool's is
+-- simply hidden.
 --
 -- The window is frameless, so this draws its own chrome. `.drag` marks what the
 -- system should treat as a title bar, `.no-drag` takes it back for anything
 -- clickable inside it.
 --
--- Written as an etlua template rather than as concatenated strings: the markup
--- is the majority of this file and it should read as markup. Inside the tags
--- the language is Lua - `<%= %>` escapes, `<%- %>` does not.
+-- Written as an etlua template: inside the tags the language is Lua, `<%= %>`
+-- escapes and `<%- %>` does not.
 ---@module shell.page
 
 etlua = require "etlua"
 menus = require "shell.menus"
+tools = require "shell.tools"
 
 -- 16px, stroke-based, inheriting colour. Drawn here rather than fetched: a
 -- handful of glyphs is not worth a font file or a sprite sheet, and inline SVG
 -- takes the colour of whatever it sits in.
 ICONS = {
+  home: '<path d="M2.75 7 8 2.75 13.25 7v6.25a1 1 0 0 1-1 1h-8.5a1 1 0 0 1-1-1Z"/><path d="M6.25 14.25v-4.5h3.5v4.5"/>'
   database: '<path d="M8 2.75c3 0 5.25.8 5.25 1.75S11 6.25 8 6.25 2.75 5.45 2.75 4.5 5 2.75 8 2.75Z"/><path d="M13.25 4.5v7c0 .95-2.25 1.75-5.25 1.75s-5.25-.8-5.25-1.75v-7"/><path d="M13.25 8c0 .95-2.25 1.75-5.25 1.75S2.75 8.95 2.75 8"/>'
   folder: '<path d="M2.25 12.25v-8.5a1 1 0 0 1 1-1h3l1.5 2h5a1 1 0 0 1 1 1v6.5a1 1 0 0 1-1 1h-9.5a1 1 0 0 1-1-1Z"/>'
   search: '<circle cx="7.25" cy="7.25" r="4.5"/><path d="m10.5 10.5 3 3"/>'
@@ -43,8 +53,6 @@ icon = (name, size = 16) ->
     'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' ..
     body .. '</svg>'
 
--- Level 2 brackets: the markup below contains ]] in nothing today, and this
--- costs nothing to be sure of.
 SOURCE = [==[
 <div class="flex h-screen flex-col bg-base-900 text-ink">
 
@@ -90,8 +98,6 @@ SOURCE = [==[
       <% end %>
     </nav>
 
-    <!-- The draggable middle, which also carries what the window is showing,
-         the way a title bar does. -->
     <div class="flex-1 text-center text-[12px] text-ink-faint"
          data-text="workspace || 'No workspace'"></div>
 
@@ -107,30 +113,66 @@ SOURCE = [==[
     </div>
   </header>
 
+  <!-- Category bar ------------------------------------------------------- -->
+  <!-- Icons only. The name appears under the cursor, because a row of labels
+       is a menu bar and this is not one. -->
+  <div class="flex h-10 shrink-0 items-center gap-1 border-b border-line
+              bg-base-900 px-2">
+    <% for _, entry in ipairs(tools) do %>
+      <button type="button" class="category-button group"
+              data-class-is-active="tool === '<%= entry.id %>'"
+              data-on-click="tool = '<%= entry.id %>'">
+        <%- icon(entry.icon or "home", 17) %>
+        <span class="surface-float pointer-events-none absolute left-1/2 top-[calc(100%+6px)]
+                     z-50 -translate-x-1/2 whitespace-nowrap rounded px-2 py-1
+                     text-[11.5px] text-ink opacity-0 transition-opacity duration-100
+                     group-hover:opacity-100"><%= entry.label %></span>
+      </button>
+    <% end %>
+  </div>
+
+  <!-- Context bar -------------------------------------------------------- -->
+  <!-- The active tool's own strip, when it declares one. -->
+  <% for _, entry in ipairs(tools) do %>
+    <% if entry.context then %>
+      <div class="flex h-9 shrink-0 items-center gap-1 border-b border-line
+                  bg-base-850 px-2 text-[12.5px]"
+           data-show="tool === '<%= entry.id %>'"><%- entry.context %></div>
+    <% end %>
+  <% end %>
+
   <!-- Body --------------------------------------------------------------- -->
   <div class="flex min-h-0 flex-1">
 
+    <!-- Action rail: the active tool's, one column of them. -->
     <nav class="flex w-11 shrink-0 flex-col items-center border-r border-line
                 bg-base-850 py-1">
-      <% for _, entry in ipairs(activities) do %>
-        <button type="button" class="activity-button" title="<%= entry.title %>"
-                data-class-is-active="activity === '<%= entry.id %>'"
-                data-on-click="activity = activity === '<%= entry.id %>' ? '' : '<%= entry.id %>'"
-        ><%- icon(entry.icon, 18) %></button>
-        <% if entry.id == "search" then %><div class="flex-1"></div><% end %>
+      <% for _, entry in ipairs(tools) do %>
+        <div class="flex w-full flex-col items-center"
+             data-show="tool === '<%= entry.id %>'">
+          <% for _, action in ipairs(entry.actions) do %>
+            <button type="button" class="action-button group"
+                    data-on-click="<%= action.action %>">
+              <%- icon(action.icon or "settings", 17) %>
+              <span class="surface-float pointer-events-none absolute left-[calc(100%+6px)]
+                           top-1/2 z-50 -translate-y-1/2 whitespace-nowrap rounded px-2 py-1
+                           text-[11.5px] text-ink opacity-0 transition-opacity duration-100
+                           group-hover:opacity-100"><%= action.title %></span>
+            </button>
+          <% end %>
+        </div>
       <% end %>
     </nav>
 
-    <aside class="flex w-64 shrink-0 flex-col border-r border-line bg-base-850"
-           data-show="side_open && activity !== ''">
-      <div class="flex h-8 shrink-0 items-center px-3 text-[11px] font-semibold
-                  uppercase tracking-wider text-ink-faint"
-           data-text="activity"></div>
-      <div class="min-h-0 flex-1 overflow-auto px-3 pb-3 text-[12.5px]">
-        <p class="text-ink-faint">Nothing open yet.</p>
-      </div>
-    </aside>
+    <!-- Side panel: also the active tool's, when it has one. -->
+    <% for _, entry in ipairs(tools) do %>
+      <% if entry.panel then %>
+        <aside class="flex w-64 shrink-0 flex-col border-r border-line bg-base-850"
+               data-show="side_open && tool === '<%= entry.id %>'"><%- entry.panel %></aside>
+      <% end %>
+    <% end %>
 
+    <!-- Work area -->
     <main class="flex min-w-0 flex-1 flex-col bg-base-900">
       <div class="flex h-9 shrink-0 items-end border-b border-line bg-base-850 px-1"
            data-show="tabs.length > 0">
@@ -142,7 +184,7 @@ SOURCE = [==[
                     data-class-bg-base-900="tab.id === active_tab"
                     data-class-border-line="tab.id === active_tab"
                     data-class-text-ink="tab.id === active_tab"
-                    data-on-click="active_tab = tab.id">
+                    data-on-click="active_tab = tab.id; tool = tab.tool || tool">
               <span data-text="tab.title"></span>
             </button>
           </template>
@@ -152,15 +194,15 @@ SOURCE = [==[
       <!-- A tool with nothing open should say what to do next, not show an
            empty grid and leave you to guess. -->
       <div class="grid min-h-0 flex-1 place-items-center" data-show="tabs.length === 0">
-        <div class="max-w-sm text-center">
+        <div class="max-w-md text-center">
           <div class="mx-auto mb-4 grid h-14 w-14 place-items-center rounded-full
                       border border-line bg-base-850 text-ink-faint">
             <%- icon("database", 24) %>
           </div>
           <h1 class="mb-1 text-[15px] font-semibold text-ink">No workspace open</h1>
           <p class="mb-5 text-[12.5px] leading-relaxed text-ink-dim">
-            A workspace points at a folder of client database files and the build
-            they came from. Everything else follows from that.
+            A workspace points at a folder of client files and the build they came
+            from. Every tool reads its settings from there.
           </p>
           <div class="flex items-center justify-center gap-2">
             <button type="button"
@@ -202,27 +244,19 @@ SOURCE = [==[
 </div>
 ]==]
 
--- The activity rail, in order. A module will add to this the same way it adds
--- to a menu.
-ACTIVITIES = {
-  { id: "explorer", icon: "folder", title: "Explorer" }
-  { id: "tables", icon: "database", title: "Tables" }
-  { id: "search", icon: "search", title: "Search" }
-  { id: "settings", icon: "settings", title: "Settings" }
-}
-
 template = nil
 
 --- The whole shell.
+--
+-- Rendered after every tool has registered, since what a tool contributes is
+-- built into the markup rather than pushed in later.
 ---@return string html
 render = ->
-  -- Compiled on first use and kept: the template does not change between
-  -- renders, and parsing it once is the difference between a helper and a cost.
   unless template
     compiled, err = etlua.compile SOURCE
     error "shell template: #{err}" unless compiled
     template = compiled
 
-  template { menus: menus.bar, activities: ACTIVITIES, :icon }
+  template { menus: menus.bar, tools: tools.list, :icon }
 
-{ :render, :icon, :ICONS, :ACTIVITIES }
+{ :render, :icon, :ICONS }

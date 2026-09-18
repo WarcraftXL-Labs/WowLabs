@@ -132,6 +132,56 @@ app\on "ready", ->
     window\exec_js "document.querySelector('.fixed.inset-0').click()"
     t.check "clicking away closes it", (t.wait_until -> open_menus! == 0)
 
+    t.section "The category bar"
+
+    tools = require "shell.tools"
+
+    t.check "one button per registered tool",
+      (window\eval "document.querySelectorAll('.category-button').length") == #tools.list,
+      "#{window\eval "document.querySelectorAll('.category-button').length"} of #{#tools.list}"
+
+    t.check "the first one is active to start with",
+      (window\eval "document.querySelector('.category-button')
+        .classList.contains('is-active')") == true
+
+    -- Icons only, with the name under the cursor: a row of labels would be a
+    -- second menu bar, and one is enough.
+    t.check "a category shows no label until it is hovered",
+      (window\eval "getComputedStyle(document.querySelector('.category-button span')).opacity") == "0"
+
+    t.check "the active tool's actions are on the rail",
+      (window\eval "[...document.querySelectorAll('.action-button')]
+        .filter(el => el.offsetParent !== null).length") == #tools.list[1].actions,
+      window\eval "[...document.querySelectorAll('.action-button')]
+        .filter(el => el.offsetParent !== null).length"
+
+    t.section "Shortcuts"
+
+    -- Registered from the menu data, so the shortcut and the entry that
+    -- advertises it cannot drift apart.
+    expected = 0
+    for menu in *menus.bar
+      for item in *menu.items
+        expected += 1 if item.accelerator and item.action
+
+    t.check "every shortcut a menu advertises is claimed",
+      #window._accelerators == expected,
+      "#{#window._accelerators} of #{expected}"
+
+    -- What a shortcut runs, run the way a shortcut runs it.
+    window\exec_js "nui.run('side_open = !side_open')"
+    t.check "one of them reaches the store",
+      (t.wait_until -> (window\eval "nui.get('side_open')") == false)
+
+    -- Ctrl+S is guarded on `dirty`, and nothing is dirty. It must do nothing
+    -- rather than save, the same as the greyed-out entry it belongs to.
+    before = window\eval "nui.get('status')"
+    window\exec_js "nui.run(\"if (dirty) { neutrino.invoke('shell:save') }\")"
+    async.sleep 120
+    t.check "and a guarded one does nothing while its guard is false",
+      (window\eval "nui.get('status')") == before,
+      window\eval "nui.get('status')"
+
     t.section "The window buttons"
 
     t.check "the chrome draws three of them",

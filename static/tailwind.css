@@ -197,18 +197,30 @@
     @apply bg-danger text-white;
   }
 
-  /* Activity bar icons down the left edge. */
-  .activity-button {
-    @apply grid h-11 w-full place-items-center text-ink-faint
-           border-l-2 border-transparent transition-colors duration-75;
+  /* A category in the bar under the menus. Relative, because the name that
+     appears on hover is positioned against it. */
+  .category-button {
+    @apply relative grid h-8 w-9 place-items-center rounded text-ink-faint
+           transition-colors duration-75;
   }
 
-  .activity-button:hover {
-    @apply text-ink-dim;
+  .category-button:hover {
+    @apply bg-base-800 text-ink-dim;
   }
 
-  .activity-button.is-active {
-    @apply text-ink border-l-accent;
+  .category-button.is-active {
+    @apply bg-base-750 text-accent;
+  }
+
+  /* An action on the rail down the left edge. Same shape, same tooltip, but it
+     does something rather than selecting something - so it never stays lit. */
+  .action-button {
+    @apply relative grid h-10 w-full place-items-center text-ink-faint
+           transition-colors duration-75;
+  }
+
+  .action-button:hover {
+    @apply bg-base-800 text-ink;
   }
 
   .status-item {

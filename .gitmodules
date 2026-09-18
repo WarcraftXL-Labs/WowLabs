@@ -1,0 +1,6 @@
+[submodule "vendor/neutrino"]
+	path = vendor/neutrino
+	url = https://github.com/WarcraftXL-Labs/Neutrino.git
+[submodule "vendor/lua-dbc"]
+	path = vendor/lua-dbc
+	url = https://github.com/WarcraftXL-Labs/lua-dbc.git

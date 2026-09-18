@@ -1,0 +1,221 @@
+@import "tailwindcss";
+
+/* Tailwind reads class names out of the sources. They are MoonScript, and it
+   scans text rather than parsing a language, so the markup inside them is
+   found like any other. */
+@source "../src";
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Tokens
+
+   A development tool, so: neutral surfaces with a faint warm cast rather than
+   the usual blue-black, one restrained accent, and contrast reserved for the
+   things that need it. The glass is two values - a translucent fill and a
+   brighter top edge - used sparingly on raised surfaces. Applied to everything
+   it stops reading as depth and starts reading as fog.
+   ───────────────────────────────────────────────────────────────────────── */
+
+@theme {
+  --color-base-950: #0a0a0c;
+  --color-base-900: #0e0e11;
+  --color-base-850: #131317;
+  --color-base-800: #17171c;
+  --color-base-750: #1d1d23;
+  --color-base-700: #24242b;
+  --color-base-600: #2e2e37;
+
+  --color-line: #26262e;
+  --color-line-soft: #1e1e25;
+
+  --color-ink: #e7e7ec;
+  --color-ink-dim: #9b9ba6;
+  --color-ink-faint: #6a6a76;
+
+  /* Amber rather than the default blue: it reads as a tool rather than as a
+     web application, and it is the one colour in the interface. */
+  --color-accent: #d2a15a;
+  --color-accent-dim: #8d6a3c;
+  --color-accent-deep: #3a2c17;
+
+  --color-danger: #d16a5a;
+  --color-ok: #7fa86a;
+
+  --font-sans: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "Cascadia Mono", "JetBrains Mono", Consolas, monospace;
+
+  --radius-panel: 6px;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Base
+   ───────────────────────────────────────────────────────────────────────── */
+
+@layer base {
+  html,
+  body {
+    height: 100%;
+    overflow: hidden;
+  }
+
+  body {
+    margin: 0;
+    background: var(--color-base-900);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-size: 13px;
+    line-height: 1.45;
+
+    /* Nothing here is a document: no text selection, no drag ghosting, no
+       rubber banding. Fields and code views turn it back on. */
+    user-select: none;
+    cursor: default;
+  }
+
+  input,
+  textarea,
+  [contenteditable],
+  .selectable {
+    user-select: text;
+    cursor: text;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-base-700);
+    border: 2px solid transparent;
+    background-clip: padding-box;
+    border-radius: 6px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--color-base-600);
+    background-clip: padding-box;
+  }
+
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Components
+
+   Only what repeats. Everything else stays as utilities in the markup, where
+   it can be read next to the element it applies to.
+   ───────────────────────────────────────────────────────────────────────── */
+
+@layer components {
+  /* A frameless window has no title bar, so the application says which
+     part of itself behaves like one. Chromium reads these two, and
+     Neutrino forwards the regions to the window. */
+  .drag {
+    -webkit-app-region: drag;
+  }
+
+  .no-drag {
+    -webkit-app-region: no-drag;
+  }
+
+  /* The raised surfaces. The gradient is a single highlight along the top
+     edge - what a pane catches, not a sheen across the whole thing. */
+  .surface {
+    background:
+      linear-gradient(
+        to bottom,
+        color-mix(in srgb, white 4%, transparent),
+        transparent 40%
+      ),
+      var(--color-base-800);
+    border: 1px solid var(--color-line);
+  }
+
+  .surface-float {
+    background:
+      linear-gradient(
+        to bottom,
+        color-mix(in srgb, white 6%, transparent),
+        transparent 32%
+      ),
+      color-mix(in srgb, var(--color-base-750) 92%, transparent);
+    border: 1px solid var(--color-line);
+    backdrop-filter: blur(18px) saturate(140%);
+    box-shadow:
+      0 12px 32px -8px rgb(0 0 0 / 0.6),
+      0 0 0 1px rgb(255 255 255 / 0.03) inset;
+  }
+
+  /* A menu bar entry: File, Edit, and the rest. */
+  .menu-title {
+    @apply px-2.5 py-1 rounded text-ink-dim transition-colors duration-75;
+  }
+
+  .menu-title:hover {
+    @apply bg-base-750 text-ink;
+  }
+
+  .menu-title.is-open {
+    @apply bg-base-700 text-ink;
+  }
+
+  .menu-item {
+    @apply flex items-center gap-3 w-full px-3 py-1.5 text-left rounded-sm
+           text-ink-dim transition-colors duration-75;
+  }
+
+  .menu-item:hover {
+    @apply bg-accent-deep text-ink;
+  }
+
+  .menu-item[data-disabled] {
+    @apply text-ink-faint pointer-events-none;
+  }
+
+  .menu-separator {
+    @apply my-1 border-t border-line-soft;
+  }
+
+  /* The window buttons. Close is the only one that colours, and only on
+     hover - it is the one mistake worth making obvious. */
+  .window-button {
+    @apply grid h-full w-[46px] place-items-center text-ink-dim
+           transition-colors duration-75;
+  }
+
+  .window-button:hover {
+    @apply bg-base-750 text-ink;
+  }
+
+  .window-button.is-close:hover {
+    @apply bg-danger text-white;
+  }
+
+  /* Activity bar icons down the left edge. */
+  .activity-button {
+    @apply grid h-11 w-full place-items-center text-ink-faint
+           border-l-2 border-transparent transition-colors duration-75;
+  }
+
+  .activity-button:hover {
+    @apply text-ink-dim;
+  }
+
+  .activity-button.is-active {
+    @apply text-ink border-l-accent;
+  }
+
+  .status-item {
+    @apply flex items-center gap-1.5 px-2 h-full text-ink-faint;
+  }
+
+  .status-item:hover {
+    @apply bg-base-750 text-ink-dim;
+  }
+}

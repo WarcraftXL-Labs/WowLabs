@@ -67,10 +67,14 @@ M.mount = (app, server) ->
     window = Neutrino.BrowserWindow {
       title: "WowLabs"
       url: "neutrino://app/"
-      width: 1440
-      height: 900
-      min_width: 960
-      min_height: 600
+      -- 1280x720 is both the size it opens at and the smallest it goes. A tool
+      -- with this much chrome has a floor below which panes start fighting
+      -- each other, and it is better to refuse than to degrade. Above it the
+      -- layout is fluid, because this is usually run maximised on 1920x1080.
+      width: 1280
+      height: 720
+      min_width: 1280
+      min_height: 720
       frameless: true
       background: { 14, 14, 17 }
 

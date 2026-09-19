@@ -35,6 +35,14 @@ ICONS = {
   folder: '<path d="M2.25 12.25v-8.5a1 1 0 0 1 1-1h3l1.5 2h5a1 1 0 0 1 1 1v6.5a1 1 0 0 1-1 1h-9.5a1 1 0 0 1-1-1Z"/>'
   search: '<circle cx="7.25" cy="7.25" r="4.5"/><path d="m10.5 10.5 3 3"/>'
   settings: '<circle cx="8" cy="8" r="2.25"/><path d="M8 1.75v1.5M8 12.75v1.5M14.25 8h-1.5M3.25 8h-1.5M12.42 3.58l-1.06 1.06M4.64 11.36l-1.06 1.06M12.42 12.42l-1.06-1.06M4.64 4.64 3.58 3.58"/>'
+  table: '<path d="M2.75 3.75h10.5v8.5H2.75Z"/><path d="M2.75 6.75h10.5M6.25 6.75v5.5"/>'
+  plus: '<path d="M8 3.5v9M3.5 8h9"/>'
+  copy: '<rect x="5.5" y="5.5" width="7.75" height="7.75" rx="1"/><path d="M10.5 3.5v-.25a1 1 0 0 0-1-1H3.75a1 1 0 0 0-1 1V9.5a1 1 0 0 0 1 1H4"/>'
+  trash: '<path d="M3.25 4.75h9.5M6.5 4.75V3.5a1 1 0 0 1 1-1h1a1 1 0 0 1 1 1v1.25"/><path d="M4.75 4.75 5.25 13a1 1 0 0 0 1 .9h3.5a1 1 0 0 0 1-.9l.5-8.25"/>'
+  undo: '<path d="M3 8.25h7a3 3 0 0 1 0 6H7"/><path d="m5.5 5.5-2.75 2.75L5.5 11"/>'
+  redo: '<path d="M13 8.25H6a3 3 0 0 0 0 6h3"/><path d="m10.5 5.5 2.75 2.75L10.5 11"/>'
+  save: '<path d="M3.75 2.75h6.5l3 3v7.5a1 1 0 0 1-1 1h-8.5a1 1 0 0 1-1-1v-9.5a1 1 0 0 1 1-1Z"/><path d="M5.25 2.75v4h5.5v-4M5.25 13.25v-3.5h5.5v3.5"/>'
+  chevron: '<path d="m4.5 6.25 3.5 3.5 3.5-3.5"/>'
   minimize: '<path d="M3 8h10"/>'
   maximize: '<rect x="3.5" y="3.5" width="9" height="9" rx="1"/>'
   restore: '<rect x="3.5" y="5.5" width="7" height="7" rx="1"/><path d="M5.5 3.5h7v7"/>'
@@ -141,10 +149,7 @@ SOURCE = [==[
               data-class-is-active="tool === '<%= entry.id %>'"
               data-on-click="tool = '<%= entry.id %>'">
         <%- icon(entry.icon or "home", 17) %>
-        <span class="surface-float pointer-events-none absolute left-1/2 top-[calc(100%+6px)]
-                     z-50 -translate-x-1/2 whitespace-nowrap rounded px-2 py-1
-                     text-[11.5px] text-ink opacity-0 transition-opacity duration-100
-                     group-hover:opacity-100"><%= entry.label %></span>
+        <span class="surface-float tip tip-below"><%= entry.label %></span>
       </button>
     <% end %>
   </div>
@@ -169,13 +174,14 @@ SOURCE = [==[
         <div class="flex w-full flex-col items-center"
              data-show="tool === '<%= entry.id %>'">
           <% for _, action in ipairs(entry.actions) do %>
+            <!-- An action may be one this tool cannot always offer. A button
+                 that is there and refuses is worse than one that is not: the
+                 refusal has to be read, and by then it has been clicked. -->
             <button type="button" class="action-button group"
+                    <% if action.shown then %>data-show="<%= action.shown %>"<% end %>
                     data-on-click="<%= action.action %>">
               <%- icon(action.icon or "settings", 17) %>
-              <span class="surface-float pointer-events-none absolute left-[calc(100%+6px)]
-                           top-1/2 z-50 -translate-y-1/2 whitespace-nowrap rounded px-2 py-1
-                           text-[11.5px] text-ink opacity-0 transition-opacity duration-100
-                           group-hover:opacity-100"><%= action.title %></span>
+              <span class="surface-float tip tip-right"><%= action.title %></span>
             </button>
           <% end %>
         </div>
@@ -221,9 +227,22 @@ SOURCE = [==[
         <%- settings_page %>
       </div>
 
+      <!-- A tool's own work area, shown while one of its tabs is the active
+           one. Rendered once, like its rail and its strip: which tab a tab
+           belongs to is data the shell already has. -->
+      <% for _, entry in ipairs(tools) do %>
+        <% if entry.view then %>
+          <div class="flex min-h-0 flex-1 flex-col"
+               data-show="tabs.some(tab => tab.id === active_tab && tab.tool === '<%= entry.id %>')"
+          ><%- entry.view %></div>
+        <% end %>
+      <% end %>
+
       <!-- A tool with nothing open should say what to do next, not show an
-           empty grid and leave you to guess. -->
-      <div class="grid min-h-0 flex-1 place-items-center" data-show="tabs.length === 0">
+           empty grid and leave you to guess - and once that has been done, it
+           should stop saying it. -->
+      <div class="grid min-h-0 flex-1 place-items-center"
+           data-show="tabs.length === 0 && workspace === ''">
         <div class="max-w-md text-center">
           <div class="mx-auto mb-4 grid h-14 w-14 place-items-center rounded-full
                       border border-line bg-base-850 text-ink-faint">
@@ -252,6 +271,38 @@ SOURCE = [==[
           </div>
         </div>
       </div>
+
+      <!-- With one open, the same space offers the tools. Built from the
+           registry rather than from a list here: a tool appears by registering
+           itself, the way it appears in the category bar.
+
+           The active tool is left out. This is the home page of whichever tool
+           you are in, so its own entry would be the one card that does
+           nothing. -->
+      <div class="grid min-h-0 flex-1 place-items-center"
+           data-show="tabs.length === 0 && workspace !== ''">
+        <div class="w-full max-w-lg px-8">
+          <h1 class="text-[15px] font-semibold text-ink">Workspace open</h1>
+          <p class="mb-5 truncate text-[12.5px] text-ink-faint" data-text="workspace"></p>
+
+          <div class="flex flex-col gap-1.5">
+            <% for _, entry in ipairs(tools) do %>
+              <button type="button" class="tool-card" data-tool="<%= entry.id %>"
+                      data-show="tool !== '<%= entry.id %>'"
+                      data-on-click="tool = '<%= entry.id %>'">
+                <span class="grid h-8 w-8 shrink-0 place-items-center rounded
+                             border border-line bg-base-800 text-ink-faint"
+                ><%- icon(entry.icon or "home", 16) %></span>
+                <span class="min-w-0">
+                  <span class="block text-[12.5px] text-ink"><%= entry.label %></span>
+                  <span class="block truncate text-[11.5px] text-ink-faint"
+                  ><%= entry.description or "" %></span>
+                </span>
+              </button>
+            <% end %>
+          </div>
+        </div>
+      </div>
     </main>
   </div>
 
@@ -269,8 +320,10 @@ SOURCE = [==[
   </footer>
 
   <!-- Closes an open menu on the next click anywhere: under the dropdowns,
-       above everything else. -->
-  <div class="fixed inset-0 z-40" data-show="menu !== ''" data-on-click="menu = ''"></div>
+       above everything else. Marked, because "the full-screen one" stopped
+       being a description of it as soon as a tool drew a dialog. -->
+  <div class="fixed inset-0 z-40" data-backdrop data-show="menu !== ''"
+       data-on-click="menu = ''"></div>
 </div>
 ]==]
 

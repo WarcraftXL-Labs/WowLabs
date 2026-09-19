@@ -37,6 +37,11 @@ app = Neutrino.App {
 server = app\server!
 server\static "/assets", "static"
 
+-- Before the shell, because what a tool contributes - its category, its rail,
+-- its strip, its store keys - is built into the page when the page is rendered
+-- and cannot arrive afterwards.
+require "modules.dbc"
+
 shell = require "shell.window"
 shell.mount app, server
 

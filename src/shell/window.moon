@@ -59,10 +59,12 @@ initial_state = ->
     icon_restore: page.icon "restore"
   }
 
-  -- The settings page's keys, from the sections that registered. Merged here
-  -- rather than declared here: the shell does not know what a module's settings
-  -- are, and a key it had to be told about would be a key modules could not add.
+  -- The settings page's keys, from the sections that registered, and each
+  -- tool's own. Merged here rather than declared here: the shell does not know
+  -- what a module's settings are, and a key it had to be told about would be a
+  -- key modules could not add.
   state[key] = value for key, value in pairs settings.state!
+  state[key] = value for key, value in pairs tools.state!
 
   state
 
@@ -209,18 +211,37 @@ M.mount = (app, server) ->
       nil
 
     settings.mount window, state
+    tools.mount window, state
 
-    -- ── Placeholders ──────────────────────────────────────────────────────
+    -- ── The menu's own commands ───────────────────────────────────────────
     --
-    -- Wired so the interface is honest about what exists: a menu entry that
-    -- does nothing at all is worse than one that says so.
+    -- Save, undo and redo are one thing to the user and a different thing in
+    -- every tool, so each is handed to whichever tool is active. A tool that
+    -- has no answer says so rather than the menu quietly doing nothing: an
+    -- entry that does nothing at all is worse than one that admits it.
+    --
+    -- A command returns the line for the status bar, or nil to leave it.
 
     for channel in *{ "shell:save", "shell:save-all", "shell:undo", "shell:redo" }
       do
         name = channel\match ":(.+)$"
         window\handle channel, ->
-          state\set "status", "#{name}: not implemented yet"
-          log.warn "%s is not implemented yet", channel
+          active = tools.find state\get "tool"
+          command = active and active.commands and active.commands[name]
+
+          unless command
+            state\set "status", "#{name}: nothing here does that yet"
+            return nil
+
+          -- A tool's command is a module's own code, and it raising is that
+          -- module's bug. Showing it beats taking the window down over it.
+          ok, said = pcall command
+          unless ok
+            log.warn "%s: %s", channel, tostring said
+            state\set "status", "#{name} failed: #{tostring said}"
+            return nil
+
+          state\set "status", said if type(said) == "string"
           nil
 
     -- ── Ready ─────────────────────────────────────────────────────────────

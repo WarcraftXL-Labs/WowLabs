@@ -1,0 +1,278 @@
+--- The table editor's markup.
+--
+-- Three regions, rendered once with the page and shown by which tool and which
+-- tab are active: the strip under the category bar, the panel down the side,
+-- and the grid in the work area.
+--
+-- **The grid binds the window, not the table.** DBC tables run to tens of
+-- thousands of rows and two hundred columns, and the runtime rebuilds a
+-- `data-for` wholesale whenever its list changes - so the list is what is on
+-- screen. A box the size of the whole table holds the scrollbars, the header
+-- and the visible block are placed inside it at the offset that matches the
+-- scroll, and scrolling asks Lua for the block that is now in view.
+--
+-- Every row is the same height and every column the same width, which is what
+-- makes that arithmetic possible at all: a grid that measured its own contents
+-- could not know where row 40,000 is without laying out the 39,999 above it.
+---@module modules.dbc.view
+
+etlua = require "etlua"
+
+M = {}
+
+--- The grid's geometry, in pixels.
+--
+-- Shared between the markup and the module that fills it: the page works out
+-- which block is in view from these, and Lua answers with exactly that block.
+-- Two copies of these numbers would be two copies that drift.
+---@type table
+M.METRICS = {
+  row: 22        -- a row, dense enough to read a screenful at once
+  column: 150    -- a column, wide enough for a spell name at 12px
+  head: 26       -- the frozen header
+  index: 72      -- the frozen row-index column
+
+  -- How much is fetched around what is visible. The window is asked for again
+  -- only when the first visible row or column leaves this margin, so an
+  -- ordinary scroll redraws from what is already here.
+  rows: 64
+  columns: 16
+  margin_rows: 6
+  margin_columns: 1
+}
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- The strip under the category bar
+-- ═══════════════════════════════════════════════════════════════════════════
+
+CONTEXT = [==[
+<div class="flex w-full items-center gap-3">
+  <span class="font-medium text-ink" data-text="dbc_open || 'No table open'"></span>
+
+  <span class="text-ink-faint" data-show="dbc_open !== ''"
+        data-text="dbc_info.rows + ' rows, ' + dbc_info.columns + ' columns'"></span>
+
+  <!-- Which slot a localised column is being read and written at. Silence here
+       is how a frFR client ends up with an enUS name written over it. -->
+  <span class="rounded border border-line px-1.5 text-[11.5px] text-ink-dim"
+        data-show="dbc_open !== ''"
+        data-text="'Text: ' + dbc_info.locale"></span>
+
+  <span class="rounded border border-line px-1.5 text-[11.5px] text-ink-faint"
+        data-show="dbc_open !== '' && !dbc_info.has_id"
+        title="This table keeps no ID in its records, so a row is named by its position."
+      >No ID column</span>
+
+  <!-- Only where there is an ID to find. On the 22 tables without one the
+       number in an ID column is the row's own position, and a box that
+       searched for it would be a box that did nothing. -->
+  <form class="flex items-center gap-1" data-show="dbc_open !== '' && dbc_info.has_id"
+        data-on-submit="$event.preventDefault(); neutrino.invoke('dbc:find', dbc_find)">
+    <input type="text" spellcheck="false" placeholder="Find ID"
+           class="w-24 rounded border border-line bg-base-950 px-2 py-0.5
+                  text-[12px] text-ink"
+           data-model="dbc_find">
+  </form>
+
+  <span class="ml-auto truncate pl-3 text-danger" data-show="dbc_message !== ''"
+        data-text="dbc_message"></span>
+</div>
+]==]
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- The side panel
+-- ═══════════════════════════════════════════════════════════════════════════
+
+PANEL = [==[
+<div class="flex min-h-0 flex-1 flex-col">
+  <div class="flex shrink-0 items-center gap-2 border-b border-line px-2 py-1.5">
+    <input type="text" spellcheck="false" placeholder="Filter tables"
+           class="w-full rounded border border-line bg-base-950 px-2 py-1
+                  text-[12px] text-ink"
+           data-model="dbc_filter">
+  </div>
+
+  <div class="min-h-0 flex-1 overflow-y-auto p-1"
+       data-for="entry in dbc_tables.filter(e => e.name.toLowerCase().includes(dbc_filter.toLowerCase()))">
+    <template>
+      <button type="button" class="dbc-table"
+              data-class-is-open="entry.name === dbc_open"
+              data-attr-data-disabled="!entry.editable"
+              data-attr-title="entry.editable ? entry.name : entry.name + ': no definition for this build'"
+              data-on-click="if (entry.editable) neutrino.invoke('dbc:open', entry.name)">
+        <span class="truncate" data-text="entry.name"></span>
+      </button>
+    </template>
+  </div>
+
+  <div class="shrink-0 border-t border-line px-2 py-1.5 text-[11.5px] text-ink-faint"
+       data-text="dbc_tables.length + ' tables'"></div>
+</div>
+]==]
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- The work area
+-- ═══════════════════════════════════════════════════════════════════════════
+
+GRID = [==[
+<div class="flex min-h-0 flex-1 flex-col">
+
+  <!-- Nothing open yet. The panel beside this is the list, so the thing to
+       say is where it is. -->
+  <div class="grid min-h-0 flex-1 place-items-center" data-show="dbc_open === ''">
+    <div class="max-w-sm text-center">
+      <h2 class="mb-1 text-[14px] font-semibold text-ink">No table open</h2>
+      <p class="text-[12.5px] leading-relaxed text-ink-dim">
+        Choose one from the list on the left. A table with no definition for
+        this build is there but cannot be opened.
+      </p>
+    </div>
+  </div>
+
+  <div class="flex min-h-0 flex-1 flex-col" data-show="dbc_open !== ''">
+
+    <!-- The scroller. Its content is the size of the whole table, so the bars
+         are the table's; what is drawn inside is the visible block. -->
+    <div class="dbc-scroller min-h-0 flex-1 overflow-auto"
+         data-on-scroll="
+           const first = Math.max(0, Math.floor($el.scrollTop / <%= metrics.row %>) - <%= metrics.margin_rows %>);
+           const left = Math.max(0, Math.floor($el.scrollLeft / <%= metrics.column %>) - <%= metrics.margin_columns %>);
+           if (first !== dbc_grid.row || left !== dbc_grid.col)
+             neutrino.invoke('dbc:window', { row: first, col: left })">
+
+      <div class="relative"
+           data-attr-style="'height:' + (dbc_grid.total_rows * <%= metrics.row %> + <%= metrics.head %>)
+             + 'px;width:' + (dbc_grid.total_cols * <%= metrics.column %> + <%= metrics.index %>) + 'px'">
+
+        <!-- Header. Frozen at the top by sticking to the scroller, so it
+             scrolls sideways with the columns it names. -->
+        <div class="sticky top-0 z-20 flex bg-base-850"
+             style="height: <%= metrics.head %>px">
+          <div class="dbc-index sticky left-0 z-30 border-b border-line">#</div>
+          <div class="flex" data-for="column in dbc_grid.columns"
+               data-attr-style="'margin-left:' + (dbc_grid.col * <%= metrics.column %>) + 'px'">
+            <template>
+              <div class="dbc-head" style="width: <%= metrics.column %>px">
+                <span class="truncate" data-text="column.label"></span>
+                <span class="ml-auto pl-1.5 text-[10.5px] text-ink-faint"
+                      data-text="column.extra ? column.kind + ' ' + column.extra : column.kind"></span>
+              </div>
+            </template>
+          </div>
+        </div>
+
+        <!-- The visible block, put where the rows it holds belong. -->
+        <div class="absolute left-0" data-for="row in dbc_grid.rows"
+             data-attr-style="'top:' + (<%= metrics.head %> + dbc_grid.row * <%= metrics.row %>) + 'px'">
+          <template>
+            <div class="flex" style="height: <%= metrics.row %>px">
+              <div class="dbc-index sticky left-0 z-10"
+                   data-class-is-new="row.new"
+                   data-class-is-current="row.index === dbc_row">
+                <span data-text="row.index"></span>
+                <span class="ml-auto text-[10.5px] text-ink-faint"
+                      data-show="dbc_info.has_id" data-text="row.id"></span>
+              </div>
+
+              <div class="flex" data-for="cell, at in row.cells"
+                   data-attr-style="'margin-left:' + (dbc_grid.col * <%= metrics.column %>) + 'px'">
+                <template>
+                  <!-- One input per visible cell. A cell that is a field means
+                       focus, selection and typing come from the browser rather
+                       than from an editor overlay of our own.
+
+                       The commit is on change, which is blur or Enter, and
+                       Enter blurs first so both take the same path. -->
+                  <input type="text" spellcheck="false" class="dbc-cell"
+                         style="width: <%= metrics.column %>px"
+                         data-attr-value="cell.v"
+                         data-attr-title="cell.e || ''"
+                         data-class-is-dirty="cell.d"
+                         data-class-is-bad="cell.e"
+                         data-on-focus="dbc_row = row.index"
+                         data-on-keydown="
+                           if ($event.key === 'Enter') $el.blur();
+                           else if ($event.key === 'Escape') { $el.value = cell.v; $el.blur() }"
+                         data-on-change="neutrino.invoke('dbc:set', {
+                           row: row.index,
+                           column: dbc_grid.col + at + 1,
+                           value: $el.value })">
+                </template>
+              </div>
+            </div>
+          </template>
+        </div>
+      </div>
+    </div>
+
+    <!-- The generated Lua, along the bottom. Closed to a single bar, because
+         it answers a question you only sometimes have. -->
+    <div class="shrink-0 border-t border-line bg-base-850">
+      <button type="button" class="flex w-full items-center gap-2 px-2 py-1
+                                   text-[11.5px] text-ink-dim"
+              data-on-click="dbc_preview_open = !dbc_preview_open;
+                             if (dbc_preview_open) neutrino.invoke('dbc:preview')">
+        <span class="dbc-caret" data-class-is-open="dbc_preview_open"
+        ><%- icon("chevron", 14) %></span>
+        <span>Lua</span>
+        <span class="text-ink-faint"
+              data-text="dbc_info.changes === 1 ? '1 changed row'
+                : dbc_info.changes + ' changed rows'"></span>
+      </button>
+
+      <pre class="dbc-preview selectable" data-show="dbc_preview_open"
+           data-text="dbc_preview"></pre>
+    </div>
+  </div>
+
+  <!-- Deleting asks first. A row is gone from the grid the moment it goes, and
+       the only way back is an undo the user has to know about. -->
+  <div class="fixed inset-0 z-50 grid place-items-center bg-base-950/60"
+       data-show="dbc_confirm !== ''">
+    <div class="surface-float w-[380px] rounded-panel p-4">
+      <h2 class="mb-1 text-[13.5px] font-semibold text-ink">Delete row</h2>
+      <p class="mb-4 text-[12.5px] leading-relaxed text-ink-dim"
+         data-text="dbc_confirm"></p>
+      <div class="flex justify-end gap-2">
+        <button type="button"
+                class="rounded border border-line bg-base-800 px-3 py-1.5
+                       text-[12.5px] text-ink-dim transition-colors
+                       hover:border-base-600 hover:text-ink"
+                data-on-click="dbc_confirm = ''">Cancel</button>
+        <button type="button"
+                class="rounded border border-danger bg-base-800 px-3 py-1.5
+                       text-[12.5px] text-ink transition-colors hover:bg-danger"
+                data-on-click="dbc_confirm = ''; neutrino.invoke('dbc:delete-row')"
+        >Delete</button>
+      </div>
+    </div>
+  </div>
+</div>
+]==]
+
+--- Renders one of the regions.
+---@param source string Template source.
+---@param icon fun(name: string, size?: integer): string
+---@return string html
+---@private
+render = (source, icon) ->
+  compiled, err = etlua.compile source
+  error "dbc template: #{err}" unless compiled
+  compiled { metrics: M.METRICS, :icon }
+
+--- The strip under the category bar.
+---@param icon fun(name: string, size?: integer): string
+---@return string html
+M.context = (icon) -> render CONTEXT, icon
+
+--- The table list.
+---@param icon fun(name: string, size?: integer): string
+---@return string html
+M.panel = (icon) -> render PANEL, icon
+
+--- The grid, the preview and the confirmation.
+---@param icon fun(name: string, size?: integer): string
+---@return string html
+M.grid = (icon) -> render GRID, icon
+
+M

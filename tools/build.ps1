@@ -27,7 +27,12 @@ $StaticSrc = Join-Path $RootDir "static"
 
 $Neutrino = Join-Path $RootDir "vendor\neutrino"
 $NeutrinoDist = Join-Path $Neutrino "dist"
-$DbcSrc = Join-Path $RootDir "vendor\lua-dbc\src"
+$DbcRoot = Join-Path $RootDir "vendor\lua-dbc"
+$DbcSrc = Join-Path $DbcRoot "src"
+
+# The one build this tool targets. Named here because the definitions are
+# trimmed to it; workspace.moon defaults to the same string.
+$Build = "3.3.5.12340"
 
 $DepsDir = Join-Path $Neutrino "deps"
 $RocksDir = Join-Path $DepsDir "rocks"
@@ -80,10 +85,41 @@ Copy-Item -Force -Destination $TestsOut `
 Step "lua-dbc"
 Copy-Item -Recurse -Force -Path (Join-Path $DbcSrc "dbc") -Destination $DistDir
 
-# --- The application --------------------------------------------------------
-
 $env:LUA_PATH = "$RocksDir\share\lua\5.1\?.lua;$RocksDir\share\lua\5.1\?\init.lua;;;"
 $env:LUA_CPATH = "$RocksDir\lib\lua\5.1\?.dll;;;"
+
+# --- Definitions ------------------------------------------------------------
+#
+# lua-dbc's definitions/ is every version of every table WoWDBDefs knows about:
+# 193 MB, of which this application reads the 3.3.5.12340 layout and nothing
+# else. The subset is generated rather than committed, because it is derived
+# from the submodule and would otherwise be a copy to keep in step by hand.
+#
+# Under a second for the whole set, so it runs on every build - and the only
+# thing that could make it stale is exactly the thing a build is for.
+
+Step "Definitions: 3.3.5.12340"
+$DefsOut = Join-Path $DistDir "definitions"
+if (Test-Path $DefsOut) { Remove-Item -Recurse -Force $DefsOut }
+
+Push-Location $DbcRoot
+& $LuaExe (Join-Path $DbcRoot "tools\slim_definitions.lua") `
+    (Join-Path $DbcRoot "definitions") $DefsOut $Build
+$definitionsFailed = $LASTEXITCODE -ne 0
+Pop-Location
+if ($definitionsFailed) { Write-Host "Definitions failed." -ForegroundColor Red; exit 1 }
+
+# Named rather than counted: a table whose definition went missing is a table
+# the editor silently refuses to open, which is not how anyone wants to find
+# out. Spell and Item are the two nothing works without.
+foreach ($table in @("Spell", "Item", "AreaTable", "Map")) {
+    if (-not (Test-Path (Join-Path $DefsOut "$table.json"))) {
+        Write-Host "definitions\$table.json was not produced." -ForegroundColor Red
+        exit 1
+    }
+}
+
+# --- The application --------------------------------------------------------
 
 Step "MoonScript: src/"
 Push-Location $SrcDir

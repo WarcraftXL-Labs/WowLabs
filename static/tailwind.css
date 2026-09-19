@@ -197,11 +197,56 @@
     @apply bg-danger text-white;
   }
 
+  /* ── The name under the cursor ───────────────────────────────────────────
+     A category and an action both name themselves on hover, and both sit at an
+     edge: the first category is 8px from the left of the window, the last one
+     is against the right as the bar fills, and the last action is at the
+     bottom of the rail. Centred on a 36px button, each of those puts half the
+     label outside the window, and `html, body { overflow: hidden }` - which is
+     what a frameless window needs - cuts it off rather than scrolling to it.
+
+     So the browser places it. The button is the anchor and the tooltip is
+     fixed and positioned against it with `position-area`, which spans the
+     whole cross axis: that makes the placement `anchor-center`, and an
+     anchor-centred box is shifted back inside its containing block rather than
+     allowed to overflow it. The margins are part of that box, so the inline
+     pair on a tooltip below - and the block pair on one to the right - are
+     what stop a shifted tooltip from sitting flush against the window edge.
+
+     No `position-try-fallbacks`, though the shape of the problem asks for
+     them: the shift means the preferred placement never overflows, so a
+     fallback is never reached. Measured, not assumed - with a fallback list
+     declared, the first category's tooltip lands in exactly the same place it
+     does without one.
+
+     `anchor-scope` is what makes one anchor name work for every button.
+     Without it `--tip` resolves to the last element in the document carrying
+     that name, and every tooltip in the window would point at one button. */
+  .tip {
+    @apply pointer-events-none z-50 whitespace-nowrap rounded px-2 py-1
+           text-[11.5px] text-ink opacity-0 transition-opacity duration-100
+           group-hover:opacity-100;
+    position: fixed;
+    position-anchor: --tip;
+  }
+
+  .tip-below {
+    position-area: block-end;
+    margin: 6px 8px 0;
+  }
+
+  .tip-right {
+    position-area: inline-end;
+    margin: 8px 0 8px 6px;
+  }
+
   /* A category in the bar under the menus. Relative, because the name that
      appears on hover is positioned against it. */
   .category-button {
     @apply relative grid h-8 w-9 place-items-center rounded text-ink-faint
            transition-colors duration-75;
+    anchor-name: --tip;
+    anchor-scope: --tip;
   }
 
   .category-button:hover {
@@ -217,10 +262,117 @@
   .action-button {
     @apply relative grid h-10 w-full place-items-center text-ink-faint
            transition-colors duration-75;
+    anchor-name: --tip;
+    anchor-scope: --tip;
   }
 
   .action-button:hover {
     @apply bg-base-800 text-ink;
+  }
+
+  /* ── The table editor ────────────────────────────────────────────────────
+     A grid of forty thousand rows repeats by definition, and every one of
+     these is drawn once per visible cell. They are also the one place in the
+     interface where the borders are part of the information: a dense grid
+     without them is a wall of numbers. */
+
+  /* One table in the list down the side. */
+  .dbc-table {
+    @apply flex w-full items-center gap-2 rounded-sm px-2 py-1 text-left
+           font-mono text-[12px] text-ink-dim transition-colors duration-75;
+  }
+
+  .dbc-table:hover {
+    @apply bg-base-800 text-ink;
+  }
+
+  .dbc-table.is-open {
+    @apply bg-base-750 text-accent;
+  }
+
+  /* A table with no definition for this build. Visible, because knowing it is
+     there matters; not clickable, because it cannot be read. */
+  .dbc-table[data-disabled] {
+    @apply pointer-events-none text-ink-faint line-through;
+  }
+
+  /* The frozen first column: which row this is, and its ID where there is
+     one. Opaque, because the cells scroll underneath it. */
+  .dbc-index {
+    @apply flex shrink-0 items-center gap-1 border-r border-line bg-base-850
+           px-2 font-mono text-[11px] text-ink-faint;
+    width: 72px;
+  }
+
+  .dbc-index.is-current {
+    @apply bg-base-750 text-ink;
+  }
+
+  /* A row that was not in the file. */
+  .dbc-index.is-new {
+    @apply text-accent;
+  }
+
+  .dbc-head {
+    @apply flex shrink-0 items-center border-b border-r border-line px-2
+           text-[11.5px] font-medium text-ink-dim;
+  }
+
+  /* A cell. An input rather than a div with an editor over it: focus,
+     selection and typing are then the browser's, and the grid has no editing
+     mode of its own to get out of step. */
+  .dbc-cell {
+    @apply h-full shrink-0 border-b border-r border-line bg-transparent px-2
+           font-mono text-[11.5px] text-ink;
+  }
+
+  .dbc-cell:hover {
+    @apply bg-base-850;
+  }
+
+  .dbc-cell:focus {
+    @apply bg-base-800 outline-none;
+    box-shadow: inset 0 0 0 1px var(--color-accent-dim);
+  }
+
+  /* Changed since the table was opened, and not yet written anywhere. */
+  .dbc-cell.is-dirty {
+    @apply text-accent;
+  }
+
+  /* The write was refused. The text is what was typed, kept so it can be
+     corrected rather than retyped; the message is on the strip above. */
+  .dbc-cell.is-bad {
+    @apply text-danger;
+    box-shadow: inset 0 0 0 1px var(--color-danger);
+  }
+
+  .dbc-caret {
+    @apply transition-transform duration-100;
+  }
+
+  .dbc-caret.is-open {
+    transform: rotate(180deg);
+  }
+
+  .dbc-preview {
+    @apply max-h-64 overflow-auto border-t border-line bg-base-950 px-3 py-2
+           font-mono text-[11.5px] leading-relaxed text-ink-dim;
+  }
+
+  /* One tool, on the home page's picker. One per registered tool, which is
+     what puts it here rather than beside the markup. */
+  .tool-card {
+    @apply flex items-center gap-3 rounded border border-line bg-base-850
+           px-3 py-2.5 text-left transition-colors duration-75;
+  }
+
+  .tool-card:hover {
+    @apply border-base-600 bg-base-800;
+  }
+
+  .tool-card:hover svg {
+    @apply text-accent;
   }
 
   .status-item {

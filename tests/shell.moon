@@ -13,6 +13,11 @@ async = Neutrino.async
 json = Neutrino.json
 ui = Neutrino.ui
 
+-- The modules, before anything renders, exactly as main.moon does it: what a
+-- tool contributes is built into the page, so a suite that left them out would
+-- be testing a shell nobody runs.
+require "modules.dbc"
+
 page = require "shell.page"
 menus = require "shell.menus"
 
@@ -129,7 +134,7 @@ app\on "ready", ->
 
     -- The backdrop is what makes a menu behave like a menu rather than like a
     -- panel that stays open until clicked again.
-    window\exec_js "document.querySelector('.fixed.inset-0').click()"
+    window\exec_js "document.querySelector('[data-backdrop]').click()"
     t.check "clicking away closes it", (t.wait_until -> open_menus! == 0)
 
     t.section "The category bar"
@@ -154,6 +159,57 @@ app\on "ready", ->
         .filter(el => el.offsetParent !== null).length") == #tools.list[1].actions,
       window\eval "[...document.querySelectorAll('.action-button')]
         .filter(el => el.offsetParent !== null).length"
+
+    t.section "The names under the cursor"
+
+    -- Measured where the browser put them rather than read off the stylesheet:
+    -- the point of the anchor fallbacks is that the declared placement is not
+    -- the one used at an edge, and only layout knows which one was.
+    laid_out = "[...document.querySelectorAll('.tip')]
+      .filter(el => el.getClientRects().length > 0)"
+
+    -- Each tool in turn, because only the active tool's rail is on screen and
+    -- an unlaid-out tooltip has no position to be wrong about.
+    seen, clipped = 0, {}
+
+    for entry in *tools.list
+      window\exec_js "nui.set('tool', '#{entry.id}')"
+      t.wait_until -> (window\eval "nui.get('tool')") == entry.id
+
+      seen += window\eval "#{laid_out}.length"
+
+      -- The first category sits 8px from the left edge and the last action at
+      -- the bottom of the rail; centred on the button, both start outside the
+      -- window, and `overflow: hidden` cuts rather than scrolls.
+      outside = window\eval "#{laid_out}
+        .filter(el => {
+          const box = el.getBoundingClientRect()
+          return box.left < 0 || box.top < 0 ||
+            box.right > window.innerWidth || box.bottom > window.innerHeight
+        })
+        .map(el => el.textContent.trim()).join(', ')"
+
+      table.insert clipped, outside if outside != ""
+
+    window\exec_js "nui.set('tool', '#{tools.first!}')"
+
+    t.check "the bars draw one for each button they show", seen > 0,
+      "#{seen} laid out"
+
+    t.check "and none of them is cut off by the window edge",
+      #clipped == 0, "clipped: #{table.concat clipped, ', '}"
+
+    -- One anchor name serves every button, which only works while each
+    -- tooltip resolves it to the button it is inside.
+    strays = window\eval "
+      [...document.querySelectorAll('.category-button')].filter(button => {
+        const tip = button.querySelector('.tip').getBoundingClientRect()
+        const box = button.getBoundingClientRect()
+        return tip.top < box.bottom || tip.left > box.right || tip.right < box.left
+      }).length"
+
+    t.check "each one is placed against its own button", strays == 0,
+      "#{strays} elsewhere"
 
     t.section "Shortcuts"
 
@@ -197,10 +253,43 @@ app\on "ready", ->
     t.check "and again restores it",
       (t.wait_until -> not window\is_maximized!), "still maximised"
 
-    t.section "The empty state"
+    t.section "The home page"
 
-    t.check "it says what to do next",
-      (window\eval "document.body.innerText")\match("No workspace open") != nil
+    -- Driven through the store rather than by opening a folder: what is being
+    -- checked is that the page follows the one it is given, and a suite that
+    -- had to find a client on the machine would be checking the machine.
+    cards = -> window\eval "[...document.querySelectorAll('.tool-card')]
+      .filter(el => el.getClientRects().length > 0).length"
+
+    window\exec_js "nui.set('workspace', '')"
+
+    t.check "with none open it says what to do next",
+      (t.wait_until ->
+        (window\eval "document.body.innerText")\match("No workspace open") != nil)
+
+    t.check "and offers nothing that needs one", cards! == 0, "#{cards!} offered"
+
+    window\exec_js "nui.set('workspace', 'C:/client')"
+
+    t.check "opening one stops it asking for one",
+      (t.wait_until ->
+        (window\eval "document.body.innerText")\match("No workspace open") == nil)
+
+    -- One per registered tool, less the one already active: its card would be
+    -- the only one that did nothing.
+    expected_cards = #tools.list - 1
+    t.check "and offers the tools instead", cards! == expected_cards,
+      "#{cards!} of #{expected_cards}"
+
+    t.check "each of them says what it is for",
+      (window\eval "[...document.querySelectorAll('.tool-card')]
+        .filter(el => el.getClientRects().length > 0)
+        .every(el => el.innerText.trim().split('\\n').length === 2)") == true
+
+    t.check "and the active tool is not among them",
+      (window\eval "[...document.querySelectorAll('.tool-card')]
+        .filter(el => el.getClientRects().length > 0)
+        .some(el => el.dataset.tool === nui.get('tool'))") == false
 
     window\close true
 

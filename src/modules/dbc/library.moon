@@ -67,6 +67,13 @@ M.DEFAULTS = {
   -- they want is slowed down rather than helped.
   resolver: false
 
+  -- Refuse a foreign key that names a row the referenced table does not have.
+  -- Off by default: it reads the referenced table to answer, which is a moment
+  -- on a large one, and a client being built up piece by piece has columns
+  -- pointing at rows that are not there *yet*. Worth switching on to go over a
+  -- table before shipping it, rather than to work in.
+  verify_fk: false
+
   -- Whether a click opens a table or only selects it. Double is for people
   -- who move through the list with the keyboard and do not want a fifty
   -- thousand row table opened at every step.

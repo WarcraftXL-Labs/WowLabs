@@ -32,6 +32,7 @@ ffi = require "ffi"
 Neutrino = require "neutrino"
 changes = require "modules.dbc.changes"
 query = require "modules.dbc.query"
+library = require "modules.dbc.library"
 relations = require "modules.dbc.relations"
 
 fs = Neutrino.fs
@@ -928,6 +929,37 @@ M.end_group = (session) ->
 
 -- ═══════════════════════════════════════════════════════════════════════════
 
+--- Why a foreign key cannot be written, or nil.
+--
+-- A column like `AreaTable.ContinentID` holds the ID of a row in another
+-- table, and nothing in the file says whether that row exists. The kind check
+-- cannot catch it - 47 is a perfectly good number - so a value pointing
+-- nowhere goes in silently and turns up in the client as a missing map.
+--
+-- Only when asked for. Reading the referenced table costs a moment on a large
+-- one, and a client being built up has columns pointing at rows that are not
+-- there yet, so refusing them by default would refuse ordinary work.
+--
+-- Three things are not a broken link: a column that refers to nothing, `0`,
+-- which is how a DBC says "nothing" on nearly every such column, and a
+-- referenced table this client does not ship - which is a question about the
+-- client rather than about the value being typed.
+---@param session table
+---@param column table
+---@param value any
+---@return string|nil
+---@private
+unresolved = (session, column, value) ->
+  return nil unless column.foreign and type(value) == "number"
+  return nil unless value != 0
+  return nil unless library.setting "verify_fk"
+
+  entries = relations.rows column.foreign, session.locale
+  return nil unless entries
+
+  return nil unless entries.by_id[value] == nil
+  "#{column.foreign} has no row #{value}"
+
 --- Writes one cell, and records enough to take it back.
 --
 -- A failed write keeps the edit: the text is remembered against the cell, the
@@ -949,6 +981,11 @@ M.set_cell = (session, index, column, text) ->
   if parse_err
     session.pending[cell] = { text: tostring(text), message: parse_err }
     return false, parse_err
+
+  link_err = unresolved session, column, value
+  if link_err
+    session.pending[cell] = { text: tostring(text), message: link_err }
+    return false, link_err
 
   ok, row = pcall session.table.GetRowByIndex, session.table, index
   return false, tostring row unless ok

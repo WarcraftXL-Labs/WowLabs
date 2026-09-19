@@ -235,6 +235,50 @@ t.check "and a good value afterwards clears it",
 
 -- ═══════════════════════════════════════════════════════════════════════════
 
+t.section "Verifying a foreign key"
+
+-- Row 2, so that what this section leaves behind is not what the sections
+-- below read. Continent points at Map, and the kind check cannot help here:
+-- every id that points nowhere is a perfectly good number.
+continent = locs.columns[2]
+t.check "the column refers to another table", continent.foreign == "Map",
+  tostring continent.foreign
+
+t.check "verification is off to begin with",
+  (library.setting "verify_fk") == false, tostring library.setting "verify_fk"
+
+loose, loose_err = editor.set_cell locs, 2, continent, "4242"
+t.check "so an id pointing nowhere is written", loose, tostring loose_err
+t.check "and the record holds it",
+  (editor.read locs, 2, continent) == "4242", editor.read locs, 2, continent
+
+library.set "verify_fk", true
+
+linked, link_err = editor.set_cell locs, 2, continent, "4343"
+t.check "with it on the same write is refused", linked == false, tostring link_err
+t.check "and it says which table has no such row",
+  link_err != nil and link_err\match("Map") != nil, tostring link_err
+t.check "the record is left as it was",
+  (editor.read locs, 2, continent) == "4242", editor.read locs, 2, continent
+
+held = editor.row_at locs, 2
+t.check "while what was typed is kept, with the reason",
+  held.c2 == "4343" and held._e.c2 != nil, tostring held.c2
+
+-- Nothing is what 0 means on nearly every column that refers anywhere, so it
+-- is not a link at all and cannot be a broken one.
+zeroed, zero_err = editor.set_cell locs, 2, continent, "0"
+t.check "zero is not a broken link", zeroed, tostring zero_err
+
+good, good_err = editor.set_cell locs, 2, continent, "2"
+t.check "nor is a row the referenced table has", good, tostring good_err
+t.check "and that one reached the record",
+  (editor.read locs, 2, continent) == "2", editor.read locs, 2, continent
+
+library.set "verify_fk", false
+
+-- ═══════════════════════════════════════════════════════════════════════════
+
 t.section "Undo and redo"
 
 editor.set_cell session, 3, name_column, "Sac de glace"

@@ -347,6 +347,17 @@ sections.register {
         time, which is a moment on a large one."
     }
     {
+      type: "toggle"
+      path: "settings.dbc.verify_fk"
+      label: "Verify foreign keys"
+      help: "Refuse a value that names a row the referenced table does not
+        have. The column would take it - 47 is a good number - and the client
+        finds out instead. Off by default: it reads the referenced table to
+        answer, and a client being built up has columns pointing at rows that
+        are not there yet. Worth switching on to go over a table before
+        shipping it."
+    }
+    {
       type: "choice"
       path: "settings.dbc.open_on"
       label: "Open a table on"
@@ -366,6 +377,7 @@ sections.register {
     locales: library.setting "locales"
     locale_hint: library.setting "locale_hint"
     resolver: library.setting "resolver"
+    verify_fk: library.setting "verify_fk"
     open_on: library.setting "open_on"
   }
 
@@ -380,6 +392,7 @@ sections.register {
     library.set "locales", LOCALE_MODES[values.locales] and values.locales or "present"
     library.set "locale_hint", values.locale_hint and true or false
     library.set "resolver", values.resolver and true or false
+    library.set "verify_fk", values.verify_fk and true or false
     library.set "open_on", values.open_on == "double" and "double" or "single"
 
     -- The folder moving means a different set of files, so what is open

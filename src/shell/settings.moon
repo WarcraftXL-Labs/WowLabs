@@ -384,6 +384,24 @@ M.register {
       path: "settings.workspace.reopen"
       label: "Reopen this workspace at startup"
     }
+    {
+      type: "choice"
+      path: "settings.workspace.autosave"
+      label: "Save unsaved work"
+      options: {
+        { value: "300", label: "Every 5 minutes" }
+        { value: "60", label: "Every minute" }
+        { value: "180", label: "Every 3 minutes" }
+        { value: "600", label: "Every 10 minutes" }
+        { value: "0", label: "Shortly after each change" }
+        { value: "-1", label: "Never" }
+      }
+      help: "Applies to every tool, not just the one in front of you. A tool
+        that has nothing unsaved is not asked, so this costs nothing while you
+        are reading. \"Shortly after each change\" waits a few seconds for
+        you to stop: a DBC table is tens of megabytes and writing one per
+        keystroke would make the grid unusable."
+    }
   }
 
   values: ->
@@ -393,6 +411,9 @@ M.register {
       output: workspace.setting "output"
       locale: workspace.setting "locale"
       reopen: workspace.setting "reopen"
+
+      -- A choice hands back the string it was given; the model keeps seconds.
+      autosave: tostring workspace.setting "autosave"
     }
 
   -- The path is applied through `open`, which is what checks the folder is
@@ -410,6 +431,8 @@ M.register {
     elseif typed != open_now
       opened, err = workspace.open typed
       return nil, err unless opened
+
+    workspace.set "autosave", (tonumber(values.autosave) or 300)
 
     for field in *{ "build", "output", "locale", "reopen" }
       value = values[field]

@@ -514,39 +514,59 @@ M.mount = (window, state) ->
     refresh!
     ok and "Redone" or err
 
-  save = ->
-    return "Nothing is open" unless active
-
+  --- Writes one session, whether or not it is the one on screen.
+  --
+  -- Takes the session rather than reading `active`, because saving everything
+  -- has to reach tables the user is not looking at - which is most of them
+  -- when the timer fires.
+  ---@param session table
+  ---@return boolean ok, string line
+  ---@private
+  save_session = (session) ->
     folder = workspace.output_dir!
-    return "There is nowhere to write: open a workspace first." unless folder
+    return false, "There is nowhere to write: open a workspace first." unless folder
 
     -- The table, or the script that reproduces it. The same edits either way;
     -- what differs is whether the result is a file a client can read or one a
     -- person can review.
-    as_lua = library.setting("save_as") == "lua"
+    if library.setting("save_as") == "lua"
+      path = fs.join folder, "#{session.name}.lua"
+      ok, err = fs.write path, editor.script session
+      return false, "#{session.name} could not be saved: #{tostring err}" unless ok
+      return true, "#{session.name} written to #{path} as Lua"
 
-    if as_lua
-      path = fs.join folder, "#{active.name}.lua"
-      ok, err = fs.write path, editor.script active
-      refresh!
+    path = fs.join folder, "#{session.name}.dbc"
+    written, err = editor.save session, path
+    return false, "#{session.name} could not be saved: #{tostring err}" unless written
+    true, "#{session.name} written to #{path} (#{written} bytes)"
 
-      unless ok
-        say tostring err
-        return "#{active.name} could not be saved: #{tostring err}"
+  save = ->
+    return "Nothing is open" unless active
 
-      say nil
-      return "#{active.name} written to #{path} as Lua"
-
-    path = fs.join folder, "#{active.name}.dbc"
-    written, err = editor.save active, path
+    ok, line = save_session active
+    say ok and nil or line
     refresh!
+    line
 
-    unless written
-      say err
-      return "#{active.name} could not be saved: #{err}"
+  --- Writes every table holding changes.
+  --
+  -- What the shell calls on the way out and on the timer. The first failure
+  -- stops it: the rest are probably the same failure, and a status line
+  -- naming five tables that could not be written for one reason is five times
+  -- the words and none of the information.
+  save_all = ->
+    written = {}
 
-    say nil
-    "#{active.name} written to #{path} (#{written} bytes)"
+    for name, session in pairs sessions
+      continue unless editor.is_dirty session
+
+      ok, line = save_session session
+      error line unless ok
+      table.insert written, name
+
+    refresh!
+    return "Nothing to save" if #written == 0
+    "Saved #{table.concat written, ", "}"
 
   window\handle "dbc:undo", ->
     state\set "status", undo!
@@ -565,7 +585,7 @@ M.mount = (window, state) ->
     :undo
     :redo
     :save
-    "save-all": save
+    "save-all": save_all
   }
 
   -- The tab bar is the page's; clicking one changes the store and nothing
@@ -674,6 +694,12 @@ M.tool = tools.register {
   context: view.context icon
   panel: view.panel icon
   view: view.grid icon
+
+  -- What the shell warns about on the way out, and saves on the timer. Named
+  -- the way the user thinks of them, because these are the words the warning
+  -- shows - not "3 sessions" but "Spell, AreaTable".
+  pending: ->
+    [name for name, session in pairs sessions when editor.is_dirty session]
 
   state: -> {
     -- Read here rather than pushed from `mount`: the store is inlined into

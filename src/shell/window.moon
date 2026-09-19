@@ -51,6 +51,9 @@ initial_state = ->
     -- of what they are working on.
     favourites: json.array (workspace.setting("favourites") or {})
 
+    -- What is unsaved, by name, when the warning on the way out is showing.
+    pending_list: json.array {}
+
     -- Work
     tabs: json.array {}
     active_tab: ""
@@ -124,7 +127,90 @@ M.mount = (app, server) ->
       sync_maximized!
       nil
 
+    -- ── Not losing work ───────────────────────────────────────────────────
+    --
+    -- Every tool answers the same two questions and the shell does the rest.
+    -- Here rather than in a module: a tool that arrives next year should get
+    -- the warning and the timer by answering `pending`, not by remembering to
+    -- write either of them again.
+
+    --- Writes whatever every tool is holding, and says how it went.
+    ---@return boolean ok, string line
+    save_everything = ->
+      written, failures = tools.save_all!
+
+      if #failures > 0
+        names = [failure.tool for failure in *failures]
+        return false, "Could not save: #{table.concat names, ", "}"
+
+      true, written > 0 and "Saved" or "Nothing to save"
+
+    autosave_id = nil
+    autosave_seen = nil
+
+    --- Starts, restarts or stops the timer from the workspace's setting.
+    --
+    -- Declared before anything that calls it: a local referenced above its own
+    -- assignment is a global, which is nil, and the failure would be a timer
+    -- that silently never ran.
+    schedule_autosave = ->
+      Neutrino.timer.stop autosave_id if autosave_id
+      autosave_id = nil
+      autosave_seen = nil
+
+      seconds = tonumber(workspace.setting "autosave") or 300
+      return if seconds < 0
+
+      -- Zero is "once you stop", which is a short poll that writes only when
+      -- the same work has been waiting since the previous look. Writing on
+      -- every change would write a forty megabyte table per keystroke.
+      settle = seconds == 0
+      interval = settle and 5000 or seconds * 1000
+
+      autosave_id = Neutrino.timer.every interval, ->
+        waiting = tools.pending!
+        if #waiting == 0
+          autosave_seen = nil
+          return
+
+        mark = table.concat [entry.label for entry in *waiting], "\0"
+        if settle and mark != autosave_seen
+          autosave_seen = mark
+          return
+
+        autosave_seen = nil
+        ok, line = save_everything!
+        state\set "status", ok and "#{line} automatically" or line
+
     window\handle "shell:close", ->
+      waiting = tools.pending!
+
+      if #waiting == 0
+        window\close!
+        return nil
+
+      -- Named, not counted. "3 unsaved tables" is a number to worry about;
+      -- "Spell, AreaTable, Map" is a list to act on.
+      state\set "pending_list", json.array [entry.label for entry in *waiting]
+      state\set "dialog", "unsaved"
+      nil
+
+    window\handle "shell:save-and-close", ->
+      ok, line = save_everything!
+      state\set "dialog", ""
+
+      -- A failed save cancels the close. Going anyway is still one click away,
+      -- and it should be a click rather than something that happened while the
+      -- window was already gone.
+      unless ok
+        state\set "status", line
+        return nil
+
+      window\close!
+      nil
+
+    window\handle "shell:close-anyway", ->
+      state\set "dialog", ""
       window\close!
       nil
 
@@ -171,6 +257,11 @@ M.mount = (app, server) ->
       state\set "build", open and open.build or ""
       state\set "recent", workspace.recent!
       state\set "status", open and "Workspace open" or "No workspace"
+
+      -- The interval is a workspace setting, so changing it restarts the
+      -- timer. Through the same listener as everything else, rather than
+      -- a second path only this one knows about.
+      schedule_autosave!
 
     -- Reports failure rather than raising, and says so on the status bar: a
     -- folder that has gone missing since it was last opened is ordinary.
@@ -300,6 +391,10 @@ M.mount = (app, server) ->
         workspace.restore!
       else
         state\set "status", "Ready"
+
+      -- After the workspace is settled, because the interval is one of its
+      -- settings and restoring one changes it.
+      schedule_autosave!
 
       log.info "shell ready"
 

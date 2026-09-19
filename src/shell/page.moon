@@ -351,6 +351,46 @@ SOURCE = [==[
     <div class="status-item" data-text="status"></div>
   </footer>
 
+  <!-- On the way out, with work that is not on disk. Named rather than
+       counted: a list is something to act on, a number is something to worry
+       about. Every tool that answers `pending` appears here without the shell
+       knowing what any of them edit. -->
+  <div class="fixed inset-0 z-50 grid place-items-center bg-base-950/60"
+       data-show="dialog === 'unsaved'">
+    <div class="surface-float w-[440px] rounded-panel p-4">
+      <h2 class="mb-1 text-[13.5px] font-semibold text-ink">Unsaved changes</h2>
+      <p class="mb-2 text-[12.5px] leading-relaxed text-ink-dim">
+        These have changes that are not written to disk:
+      </p>
+
+      <ul class="mb-4 max-h-40 overflow-y-auto rounded border border-line
+                 bg-base-950 px-3 py-2 font-mono text-[11.5px] text-ink"
+          data-for="name in pending_list">
+        <template><li data-text="name"></li></template>
+      </ul>
+
+      <div class="flex justify-end gap-2">
+        <button type="button"
+                class="rounded border border-line bg-base-800 px-3 py-1.5
+                       text-[12.5px] text-ink-dim transition-colors
+                       hover:border-base-600 hover:text-ink"
+                data-on-click="dialog = ''">Cancel</button>
+        <button type="button"
+                class="rounded border border-danger bg-base-800 px-3 py-1.5
+                       text-[12.5px] text-ink-dim transition-colors
+                       hover:text-ink"
+                data-on-click="neutrino.invoke('shell:close-anyway')"
+          >Close without saving</button>
+        <button type="button"
+                class="rounded border border-accent-dim bg-accent-deep px-3 py-1.5
+                       text-[12.5px] text-ink transition-colors
+                       hover:border-accent hover:bg-base-700"
+                data-on-click="neutrino.invoke('shell:save-and-close')"
+          >Save and close</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Closes an open menu on the next click anywhere: under the dropdowns,
        above everything else. Marked, because "the full-screen one" stopped
        being a description of it as soon as a tool drew a dialog. -->

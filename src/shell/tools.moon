@@ -46,6 +46,11 @@
 -- undo and redo are one command to the user and a different one in every tool,
 -- so the menu asks whichever tool is active and says so when that tool has no
 -- answer. They are usually filled in from `mount`, where the window is.
+--
+-- `pending` is how the shell knows there is work to lose. A tool answers with
+-- the names of what it has not written; the shell warns on the way out and
+-- saves on a timer. Tools that answer it get both without doing anything
+-- else, and a tool that does not answer is assumed to have nothing at stake.
 ---@module shell.tools
 
 M = {}
@@ -104,6 +109,65 @@ M.state = ->
 M.mount = (window, state) ->
   for tool in *M.list
     tool.mount window, state if tool.mount
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Unsaved work
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- Every tool answers the same two questions - what have you not written, and
+-- write it - and the shell does the rest: the warning on the way out, and the
+-- timer that saves without being asked.
+--
+-- Here rather than in a module, because losing work is not a property of any
+-- one tool. A tool that arrives next year gets this by answering `pending`.
+
+--- What every tool is holding that is not on disk.
+--
+-- A tool answers with a list of names - the tables, the files, whatever it
+-- calls the things it edits. The names are what the warning shows, so they
+-- should read the way the user thinks of them.
+---@return table[] entries { tool = id, label = string }
+M.pending = ->
+  entries = {}
+
+  for tool in *M.list
+    continue unless tool.pending
+
+    -- Through pcall: this runs on the way out of the application, and a tool
+    -- that raises here would take the warning with it - which is precisely
+    -- when the warning matters.
+    ok, found = pcall tool.pending
+    unless ok
+      io.stderr\write "[wowlabs] #{tool.id}: pending failed: #{tostring found}\n"
+      continue
+
+    continue unless type(found) == "table"
+    for label in *found
+      table.insert entries, { tool: tool.id, label: tostring label }
+
+  entries
+
+--- Writes what every tool is holding.
+--
+-- Answers what could not be written rather than raising: a save that fails
+-- part way through still has to say which parts, and the caller decides
+-- whether that is worth stopping for.
+---@return integer written, table[] failures { tool = id, error = string }
+M.save_all = ->
+  written = 0
+  failures = {}
+
+  for tool in *M.list
+    command = tool.commands and tool.commands["save-all"]
+    continue unless command
+
+    ok, err = pcall command
+    if ok
+      written += 1
+    else
+      table.insert failures, { tool: tool.id, error: tostring err }
+
+  written, failures
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- Built in

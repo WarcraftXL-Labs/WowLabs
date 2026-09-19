@@ -247,6 +247,23 @@ workspace.reload!
 t.check "and survives a reload", (workspace.setting "locale") == "frFR",
   workspace.setting "locale"
 
+-- Every field the interface writes has to be in the settable list, or `set`
+-- refuses it and the setting silently never persists. Starring a tool went
+-- nowhere for exactly this reason, and nothing said so.
+for field, value in pairs { favourites: { "dbc" }, autosave: 60, reopen: false }
+  ok, err = workspace.set field, value
+  t.check "#{field} is a setting that can be written", ok == true, tostring err
+
+workspace.reload!
+t.check "the favourites survive a reload",
+  (table.concat (workspace.setting "favourites"), ",") == "dbc",
+  table.concat (workspace.setting "favourites"), ","
+t.check "and so does the autosave interval",
+  (workspace.setting "autosave") == 60, tostring workspace.setting "autosave"
+
+t.check "a field that is not settable is refused rather than dropped",
+  (workspace.set "nonsense", 1) == nil
+
 t.check "the output folder falls back to one inside the workspace",
   (fs.comparable workspace.output_dir!) == (fs.comparable fs.join client, "output"),
   workspace.output_dir!

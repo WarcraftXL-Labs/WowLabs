@@ -49,6 +49,18 @@ M.DEFAULTS = {
   -- that is only noticed after the hundredth time.
   reopen: true
 
+  -- How often unsaved work is written without being asked, in seconds. Five
+  -- minutes by default and on by default, because the cost of it running is a
+  -- file write nobody notices and the cost of it not running is an afternoon.
+  --
+  -- 0 means "shortly after each change" rather than "on every keystroke": a
+  -- table is tens of megabytes and writing one per character typed would make
+  -- the grid unusable. See `autosave` in shell/window.moon for the delay.
+  autosave: 300
+
+  -- The tools starred on the home page, most useful first.
+  favourites: json.array {}
+
   recent: json.array {}
 }
 
@@ -198,8 +210,12 @@ M.restore = ->
   announce!
   M.current!
 
+-- What `set` will write. A field missing from here is refused rather than
+-- silently dropped, which is the only reason this list exists: a typo in a
+-- field name is otherwise a setting that never persists and never says why.
 FIELDS = {
   path: true, build: true, output: true, locale: true, reopen: true
+  favourites: true, autosave: true
 }
 
 --- Changes one field and persists it.

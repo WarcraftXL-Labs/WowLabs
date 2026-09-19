@@ -54,6 +54,61 @@ t.check "a label is escaped rather than inserted",
   escaped\match("<b>label</b>") == nil and
     escaped\match("&lt;b&gt;label") != nil
 
+t.section "Unsaved work, across every tool"
+
+-- The contract the shell warns and saves on. Tested against made-up tools
+-- rather than the real ones: what is being checked is that the shell collects
+-- from all of them and survives one misbehaving, which no real tool does on
+-- demand.
+tools = require "shell.tools"
+before = #tools.list
+
+tools.register {
+  id: "fake-quiet", label: "Quiet"
+  pending: -> {}
+  commands: { "save-all": -> "nothing" }
+}
+
+tools.register {
+  id: "fake-busy", label: "Busy"
+  pending: -> { "Spell", "AreaTable" }
+  commands: { "save-all": -> "saved" }
+}
+
+waiting = tools.pending!
+t.check "every tool holding something is asked", #waiting == 2,
+  "#{#waiting} entries"
+t.check "and each entry says which tool and what",
+  waiting[1].tool == "fake-busy" and waiting[1].label == "Spell",
+  "#{waiting[1].tool}/#{waiting[1].label}"
+
+-- On the way out is exactly when a tool raising must not take the warning
+-- with it: the warning is the thing standing between the user and the loss.
+tools.register {
+  id: "fake-broken", label: "Broken"
+  pending: -> error "no"
+  commands: { "save-all": -> error "cannot write" }
+}
+
+t.check "a tool that raises is skipped, not fatal",
+  (pcall tools.pending) and #tools.pending! == 2, "#{#tools.pending!} entries"
+
+written, failures = tools.save_all!
+t.check "saving reaches every tool that can", written == 2, tostring written
+t.check "and reports the one that could not rather than raising",
+  #failures == 1 and failures[1].tool == "fake-broken",
+  "#{#failures} failures"
+
+-- Put back, or the browser half below would draw three tools nobody wrote.
+for id in *{ "fake-quiet", "fake-busy", "fake-broken" }
+  for index = #tools.list, 1, -1
+    table.remove tools.list, index if tools.list[index].id == id
+
+t.check "and the made-up tools are gone again", #tools.list == before,
+  "#{#tools.list} tools"
+
+-- ═══════════════════════════════════════════════════════════════════════════
+
 t.section "Menus as data"
 
 t.check "a module can add to a menu", menus.extend "file", {

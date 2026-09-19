@@ -483,11 +483,11 @@
   /* Where the relations graph is drawn. Cytoscape measures its container, so
      this has to have a size before the graph is laid out into it. */
   .dbc-canvas {
-    @apply absolute inset-0 bg-base-950;
+    @apply bg-base-950;
   }
 
   .dbc-graph-empty {
-    @apply absolute inset-0 grid place-items-center px-16 text-center
+    @apply grid min-h-0 flex-1 place-items-center px-16 text-center
            text-[12.5px] leading-relaxed text-ink-faint;
   }
 

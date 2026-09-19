@@ -375,14 +375,17 @@ GRID = [==[
         </div>
       </div>
 
-      <div class="relative min-h-0 flex-1">
-        <div class="dbc-canvas"></div>
+      <!-- The host is the flex child itself. Wrapped in a relative box with
+           the canvas absolutely inside it, the canvas took its width from the
+           wrapper and no height at all - and a graph laid out into a box of
+           no height is a graph nobody can see. -->
+      <div class="dbc-canvas min-h-0 flex-1"
+           data-show="dbc_graph.nodes.length > 0"></div>
 
-        <div class="dbc-graph-empty" data-show="dbc_graph.nodes.length === 0">
-          Nothing is linked to anything here. Either the definitions carry no
-          foreign keys for this build, or the client has none of the tables
-          they name.
-        </div>
+      <div class="dbc-graph-empty" data-show="dbc_graph.nodes.length === 0">
+        Nothing is linked to anything here. Either the definitions carry no
+        foreign keys for this build, or the client has none of the tables
+        they name.
       </div>
     </div>
   </div>

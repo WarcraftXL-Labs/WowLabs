@@ -145,6 +145,21 @@ M.mount = (window, state) ->
         return value || fallback
       }
 
+      // Cytoscape measures its container when it starts, and the panel is
+      // hidden until the store update that opens it has been drawn. Started
+      // against a box of no size, it lays the whole graph out into a point and
+      // then fits the viewport to that point: every node is there, the counts
+      // are right, and the screen is empty.
+      const withSize = (host) => new Promise((resolve) => {
+        let tries = 0
+        const tick = () => {
+          if (host.clientWidth > 0 && host.clientHeight > 0) return resolve(true)
+          if (tries++ > 90) return resolve(false)
+          requestAnimationFrame(tick)
+        }
+        tick()
+      })
+
       const drawGraph = async () => {
         const data = nui.get('dbc_graph')
         const host = document.querySelector('.dbc-canvas')
@@ -154,6 +169,7 @@ M.mount = (window, state) ->
         try { cytoscape = await loadCytoscape() }
         catch (err) { host.textContent = String(err); return }
 
+        if (!await withSize(host)) return
         if (graph) { graph.destroy(); graph = null }
 
         const accent = token('--color-accent', '#d2a15a')
@@ -193,7 +209,6 @@ M.mount = (window, state) ->
         graph = cytoscape({
           container: host,
           elements,
-          layout,
           minZoom: 0.15,
           maxZoom: 3,
           wheelSensitivity: 0.25,
@@ -253,12 +268,69 @@ M.mount = (window, state) ->
           neutrino.invoke('dbc:relations', event.target.id())
         })
 
-        graph.fit(undefined, 40)
+        // Run here rather than handed to the constructor, and fitted when it
+        // stops: a fit taken while the layout is still moving frames the
+        // positions it happened to catch, which is how a graph ends up with
+        // half its nodes off the edge.
+        const run = graph.layout(layout)
+        run.on('layoutstop', () => {
+          graph.resize()
+          graph.fit(undefined, 40)
+        })
+        run.run()
+
+        if (window.ResizeObserver) {
+          const watcher = new ResizeObserver(() => {
+            if (!graph) return
+            graph.resize()
+            graph.fit(undefined, 40)
+          })
+          watcher.observe(host)
+          graph.on('destroy', () => watcher.disconnect())
+        }
       }
 
       // How many nodes the graph actually holds, which is the only way from
       // outside to tell "the data arrived" from "the picture was drawn".
       window.__cyNodes = () => (graph ? graph.nodes().length : -1)
+
+      // Whether anything is actually on screen: the nodes drawn inside the
+      // container, with a size. Everything short of this was true while the
+      // graph was being laid out into a single point.
+      window.__cyDrawn = () => {
+        if (!graph) return 0
+        const host = document.querySelector('.dbc-canvas')
+        if (!host) return 0
+
+        const width = host.clientWidth
+        const height = host.clientHeight
+        let seen = 0
+
+        graph.nodes().forEach((node) => {
+          const box = node.renderedBoundingBox()
+          if (box.w < 2 || box.h < 2) return
+          if (box.x2 < 0 || box.y2 < 0 || box.x1 > width || box.y1 > height) return
+          seen += 1
+        })
+
+        return seen
+      }
+
+      // For the suite, which is the only thing that can see this fail. Without
+      // the container's size a failure reads "1 of 2 drawn" and says nothing
+      // about why - and the why was a box with no height.
+      window.__cyDebug = () => {
+        if (!graph) return 'no graph'
+        const host = document.querySelector('.dbc-canvas')
+        const parts = [host.clientWidth + 'x' + host.clientHeight,
+                       'zoom=' + graph.zoom().toFixed(2)]
+        graph.nodes().forEach((n) => {
+          const b = n.renderedBoundingBox()
+          parts.push(n.id() + ':' + Math.round(b.x1) + ',' + Math.round(b.y1) +
+                     ' ' + Math.round(b.w) + 'x' + Math.round(b.h))
+        })
+        return parts.join(' | ')
+      }
 
       window.dbcGraphFit = () => { if (graph) graph.fit(undefined, 40) }
       window.dbcGraphLayout = () => {
@@ -903,8 +975,10 @@ M.mount = (window, state) ->
 
   -- The tables belong to the folder that was open. A different workspace is a
   -- different set of files, and the sessions describing the old ones would be
-  -- describing rows nobody can see.
+  -- describing rows nobody can see. The names a foreign key resolves to came
+  -- out of those files too, so they go with them.
   workspace.on_change ->
+    relations.reset!
     sessions = {}
     active = nil
     at_row, at_col = 0, 0

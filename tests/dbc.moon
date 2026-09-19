@@ -1195,6 +1195,17 @@ app\on "ready", ->
         (window\eval "nui.get('dbc_graph').nodes.length")),
       tostring window\eval "window.__cyNodes ? window.__cyNodes() : -1"
 
+    -- The one that matters, and the one the checks above cannot make: every
+    -- node on screen, with a size, inside the box. Started against a hidden
+    -- container Cytoscape lays the whole graph into a single point - the
+    -- counts are right, the canvas is there, and nothing is visible.
+    drawn = -> window\eval "window.__cyDrawn ? window.__cyDrawn() : 0"
+    wanted = -> window\eval "nui.get('dbc_graph').nodes.length"
+
+    t.check "and every node is on screen with a size",
+      (t.wait_until -> drawn! == wanted!),
+      "#{drawn!} of #{wanted!} drawn :: " .. tostring window\eval "window.__cyDebug()"
+
     window\exec_js "nui.set('dbc_graph_open', false)"
     t.check "and closing it takes the canvas away",
       (t.wait_until -> (window\eval "document.querySelectorAll('.dbc-canvas canvas').length") == 0),

@@ -10,9 +10,9 @@
 
    A development tool, so: neutral surfaces with a faint warm cast rather than
    the usual blue-black, one restrained accent, and contrast reserved for the
-   things that need it. The glass is two values - a translucent fill and a
-   brighter top edge - used sparingly on raised surfaces. Applied to everything
-   it stops reading as depth and starts reading as fog.
+   things that need it. Raised surfaces are flat fills; a floating one is
+   translucent with a plain blur behind it, which says "there is something
+   under this" without turning into a material of its own.
    ───────────────────────────────────────────────────────────────────────── */
 
 @theme {
@@ -124,32 +124,22 @@
     -webkit-app-region: no-drag;
   }
 
-  /* The raised surfaces. The gradient is a single highlight along the top
-     edge - what a pane catches, not a sheen across the whole thing. */
+  /* The raised surfaces. Flat fills and a line: depth here comes from the
+     tone being lighter than what is behind it, and from the shadow under a
+     floating one - not from a sheen. Highlights along an edge read as glass,
+     which is a material, and a material is a thing to notice rather than to
+     look through. */
   .surface {
-    background:
-      linear-gradient(
-        to bottom,
-        color-mix(in srgb, white 4%, transparent),
-        transparent 40%
-      ),
-      var(--color-base-800);
+    background: var(--color-base-800);
     border: 1px solid var(--color-line);
   }
 
+  /* Still translucent, because the blur has to have something to blur. */
   .surface-float {
-    background:
-      linear-gradient(
-        to bottom,
-        color-mix(in srgb, white 6%, transparent),
-        transparent 32%
-      ),
-      color-mix(in srgb, var(--color-base-750) 92%, transparent);
+    background: color-mix(in srgb, var(--color-base-750) 92%, transparent);
     border: 1px solid var(--color-line);
-    backdrop-filter: blur(18px) saturate(140%);
-    box-shadow:
-      0 12px 32px -8px rgb(0 0 0 / 0.6),
-      0 0 0 1px rgb(255 255 255 / 0.03) inset;
+    backdrop-filter: blur(14px);
+    box-shadow: 0 12px 32px -8px rgb(0 0 0 / 0.6);
   }
 
   /* A menu bar entry: File, Edit, and the rest. */

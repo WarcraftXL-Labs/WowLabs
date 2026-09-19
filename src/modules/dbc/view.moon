@@ -366,6 +366,20 @@ GRID = [==[
           >Every linked table in the client. Drag to pan, wheel to zoom.</span>
 
         <div class="ml-auto flex items-center gap-1">
+          <!-- The whole client, whether or not a table is in front. Without
+               this the wide view is only reachable before the first table is
+               opened, because the one in front stays in front. -->
+          <button type="button" class="dbc-chip"
+                  data-class-is-on="dbc_graph.focus === ''"
+                  data-on-click="neutrino.invoke('dbc:relations', '*')"
+            >Whole client</button>
+          <button type="button" class="dbc-chip" data-show="dbc_open !== ''"
+                  data-class-is-on="dbc_graph.focus !== ''"
+                  data-on-click="neutrino.invoke('dbc:relations', dbc_open)"
+                  data-text="dbc_open"></button>
+
+          <span class="mx-1 h-4 w-px bg-line"></span>
+
           <button type="button" class="dbc-chip"
                   data-on-click="window.dbcGraphFit()">Fit</button>
           <button type="button" class="dbc-chip"

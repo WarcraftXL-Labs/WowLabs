@@ -446,6 +446,12 @@
     @apply border-base-600 text-ink;
   }
 
+  /* Which of two views is showing, for a pair of chips that are a choice
+     rather than two things to do. */
+  .dbc-chip.is-on {
+    @apply border-accent-dim bg-base-750 text-accent;
+  }
+
   /* Between two kinds of rail action: the ones that change the table and the
      ones that only answer questions about it. */
   .action-rule {

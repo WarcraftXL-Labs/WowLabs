@@ -1206,6 +1206,24 @@ app\on "ready", ->
       (t.wait_until -> drawn! == wanted!),
       "#{drawn!} of #{wanted!} drawn :: " .. tostring window\eval "window.__cyDebug()"
 
+    -- The wide view has to be askable rather than only arrived at: the table
+    -- in front stays in front after its tab is closed, so "nothing is open"
+    -- is a state almost nobody gets back to.
+    window\exec_js "neutrino.invoke('dbc:relations', '*')"
+
+    t.check "the whole client can be asked for while a table is open",
+      (t.wait_until -> (window\eval "nui.get('dbc_graph').focus") == ""),
+      tostring window\eval "nui.get('dbc_graph').focus"
+
+    t.check "and it holds every linked table rather than one's neighbours",
+      (t.wait_until -> drawn! == wanted!) and wanted! > 0,
+      "#{drawn!} of #{wanted!} drawn"
+
+    window\exec_js "neutrino.invoke('dbc:relations', 'WorldSafeLocs')"
+    t.check "and going back to one table re-roots it",
+      (t.wait_until -> (window\eval "nui.get('dbc_graph').focus") == "WorldSafeLocs"),
+      tostring window\eval "nui.get('dbc_graph').focus"
+
     window\exec_js "nui.set('dbc_graph_open', false)"
     t.check "and closing it takes the canvas away",
       (t.wait_until -> (window\eval "document.querySelectorAll('.dbc-canvas canvas').length") == 0),

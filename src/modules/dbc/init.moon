@@ -799,8 +799,15 @@ M.mount = (window, state) ->
     -- Which table the picture is drawn around. Re-rooting it on a neighbour
     -- does not open that table: looking at the shape and working in it are
     -- different things to want, and one should not drag the other along.
-    focus = type(name) == "string" and name != "" and name or
-      (active and active.name or "")
+    --
+    -- "*" asks for the whole client. It has to be askable: the table in front
+    -- stays in front after its tab is closed, so "nothing is open" is a state
+    -- almost nobody gets back to once they have started.
+    focus = if name == "*"
+      ""
+    else
+      type(name) == "string" and name != "" and name or
+        (active and active.name or "")
 
     nodes, edges = {}, {}
 

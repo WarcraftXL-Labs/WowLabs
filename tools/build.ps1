@@ -150,7 +150,10 @@ foreach ($item in $resources) {
 # template that did not arrive is a region that renders empty, and the place
 # to find that out is here.
 foreach ($required in @("modules\dbc\views\grid.etlua",
-                        "modules\dbc\scripts\grid.js")) {
+                        "modules\dbc\scripts\grid.js",
+                        "shell\views\shell.etlua",
+                        "shell\views\settings.etlua",
+                        "shell\views\tool-card.etlua")) {
     if (-not (Test-Path (Join-Path $DistDir $required))) {
         Write-Host "$required was not copied into dist\." -ForegroundColor Red
         exit 1

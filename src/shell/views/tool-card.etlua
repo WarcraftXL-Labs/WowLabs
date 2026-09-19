@@ -1,0 +1,14 @@
+<button type="button" class="tool-star"
+        data-class-is-on="favourites.includes('<%= id %>')"
+        data-attr-title="favourites.includes('<%= id %>') ? 'Remove from favourites'
+          : 'Add to favourites'"
+        data-on-click="event.stopPropagation();
+                       neutrino.invoke('shell:favourite', '<%= id %>')">&#9733;</button>
+
+<button type="button" class="flex w-full flex-col items-center gap-2"
+        data-on-click="neutrino.invoke('shell:tool', '<%= id %>')">
+  <span class="grid h-10 w-10 place-items-center rounded border border-line
+               bg-base-800 text-ink-faint"><%- glyph %></span>
+  <span data-name class="text-[12.5px] text-ink"><%= label %></span>
+  <span data-about class="text-[11px] leading-snug text-ink-faint"><%= about %></span>
+</button>

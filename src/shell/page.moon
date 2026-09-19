@@ -220,7 +220,10 @@ SOURCE = [==[
                     data-class-bg-base-900="tab.id === active_tab"
                     data-class-border-line="tab.id === active_tab"
                     data-class-text-ink="tab.id === active_tab"
-                    data-attr-title="tab.title"
+                    data-class-is-preview="tab.preview"
+                    data-attr-title="tab.preview
+                      ? tab.title + ' — being read. Double-click it in the list, or edit it, to keep it.'
+                      : tab.title"
                     data-on-mousedown="if ($event.button === 1) {
                       $event.preventDefault();
                       neutrino.invoke('shell:close-tab', tab.id) }"

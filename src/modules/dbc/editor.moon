@@ -159,25 +159,45 @@ M.columns = (schema, locale, slots) ->
 -- Sessions
 -- ═══════════════════════════════════════════════════════════════════════════
 
+--- Which locale slots a session shows a column for.
+--
+-- Three answers, because they serve three different jobs: editing a client in
+-- one language, checking a translation against the others, and filling in a
+-- language the file does not carry yet - which is the only one "the languages
+-- present" cannot do, since the column would not be there to type into.
+---@param mode string "workspace", "present" or "all".
+---@param present string[] What the file actually carries.
+---@return string[]|nil slots nil for one column at the workspace's locale.
+M.slots_for = (mode, present) ->
+  return M.LOCALES if mode == "all"
+  return present if mode == "present"
+  nil
+
 --- Opens a session on a table.
 ---@param tbl table DbcTable.
 ---@param name string Table name.
 ---@param locale string Locale slot to edit.
 ---@param build string
+---@param mode? string "workspace", "present" or "all". Defaults to the
+--- workspace's own locale: a caller that says nothing gets the simplest
+--- shape, and the application always says.
 ---@return table session
-M.session = (tbl, name, locale, build, spread) ->
+M.session = (tbl, name, locale, build, mode) ->
   schema = tbl\GetSchema!
   rows = tbl\Count!
-  slots = M.populated_locales tbl, schema
+  present = M.populated_locales tbl, schema
+  slots = M.slots_for (mode or "workspace"), present
 
   session = {
     :name
     :locale
     table: tbl
     :schema
+    present: present
     slots: slots
-    spread: spread and true or false
-    columns: M.columns schema, locale, spread and slots or nil
+    mode: mode or "workspace"
+    spread: slots != nil
+    columns: M.columns schema, locale, slots
     has_id: schema.has_id_inline and true or false
     format: tbl\GetFormatName!
 
@@ -351,7 +371,19 @@ M.position_of = (session, index) ->
     return position if session.view[position] == index
   nil
 
---- The column a name refers to, by label first and field name second.
+--- The column a name refers to.
+--
+-- Three spellings, because a localised column's label carries a space -
+-- `Name_lang frFR` - and the query language splits on whitespace. Quoting it
+-- works, and so does a dot, which is the form that can be typed without
+-- reaching for the quote key:
+--
+--     'Name_lang frFR' CONTAINS 'feu'
+--     Name_lang.frFR CONTAINS 'feu'
+--
+---@param session table
+---@param name string
+---@return table|nil column
 ---@private
 column_named = (session, name) ->
   return nil unless type(name) == "string"
@@ -359,6 +391,14 @@ column_named = (session, name) ->
 
   for column in *session.columns
     return column if column.label\lower! == lowered
+
+  -- field.locale, and field[n] for an array element.
+  field, part = lowered\match "^(.-)%.(.+)$"
+  if field
+    for column in *session.columns
+      continue unless column.field\lower! == field
+      return column if tostring(column.extra)\lower! == part
+
   for column in *session.columns
     return column if column.field\lower! == lowered
   nil

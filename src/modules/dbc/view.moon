@@ -67,26 +67,12 @@ CONTEXT = [==[
         title="This table keeps no ID in its records, so a row is named by its position."
       >No ID column</span>
 
-  <!-- The search. A column picked from the list is written into the box rather
-       than applied on its own: the box is the whole query, and a picker that
-       set a hidden second filter would mean two places to look when the grid
-       shows something unexpected. -->
+  <!-- The search. The box is the whole query: a picker that set a second,
+       hidden filter beside it would mean two places to look when the grid
+       shows something unexpected. What the list of columns was for is served
+       better by the help beside it, which can say what to do with them. -->
   <form class="ml-auto flex items-center gap-1" data-show="dbc_open !== ''"
         data-on-submit="$event.preventDefault(); neutrino.invoke('dbc:query', dbc_query)">
-
-    <select class="dbc-picker" data-model="dbc_pick"
-            data-on-change="
-              if ($el.value) {
-                dbc_query = (dbc_query ? dbc_query.trim() + ' AND ' : '') + $el.value + ' ';
-                dbc_pick = '';
-                const box = $el.parentElement.querySelector('input');
-                if (box) { box.focus(); box.setSelectionRange(dbc_query.length, dbc_query.length) }
-              }">
-      <option value="">Column</option>
-      <template data-for="column in dbc_columns">
-        <option data-attr-value="column" data-text="column"></option>
-      </template>
-    </select>
 
     <input type="text" spellcheck="false"
            placeholder="Name LIKE 'Fire%' AND SpellLevel > 10"
@@ -101,6 +87,9 @@ CONTEXT = [==[
     <button type="button" class="dbc-chip" data-show="dbc_query !== ''"
             data-on-click="dbc_query = ''; neutrino.invoke('dbc:query', '')"
             title="Clear the search">Clear</button>
+
+    <button type="button" class="dbc-help-button" title="How to write a filter"
+            data-on-click="dbc_help = true">?</button>
   </form>
 
   <span class="truncate pl-3 text-danger" data-show="dbc_message !== ''"
@@ -124,18 +113,23 @@ PANEL = [==[
   <div class="min-h-0 flex-1 overflow-y-auto p-1"
        data-for="entry in dbc_tables.filter(e => e.name.toLowerCase().includes(dbc_filter.toLowerCase()))">
     <template>
-      <!-- One click or two, as the settings say. On double, a single click
-           still picks the entry out: moving through a list of two hundred
-           tables should not open a fifty thousand row one on the way past. -->
+      <!-- One click reads, two keep. In the two-click mode a single click
+           still opens the table - you can read it, sort it, search it - but
+           into one reused tab that the next single click replaces. A double
+           click, or the first edit, gives it a tab of its own.
+
+           In the one-click mode every click keeps, which is the simpler
+           behaviour for somebody working in two or three tables all day. -->
       <button type="button" class="dbc-table"
               data-class-is-open="entry.name === dbc_open"
               data-class-is-picked="entry.name === dbc_picked && entry.name !== dbc_open"
               data-attr-data-disabled="!entry.editable"
               data-attr-title="entry.editable ? entry.name : entry.name + ': no definition for this build'"
               data-on-click="dbc_picked = entry.name;
-                if (dbc_open_on === 'single' && entry.editable)
-                  neutrino.invoke('dbc:open', entry.name)"
-              data-on-dblclick="if (entry.editable) neutrino.invoke('dbc:open', entry.name)">
+                if (entry.editable) neutrino.invoke('dbc:open', {
+                  name: entry.name, pinned: dbc_open_on === 'single' })"
+              data-on-dblclick="if (entry.editable) neutrino.invoke('dbc:open', {
+                name: entry.name, pinned: true })">
         <span class="truncate" data-text="entry.name"></span>
       </button>
     </template>
@@ -303,6 +297,84 @@ GRID = [==[
 
       <pre class="dbc-preview selectable" data-show="dbc_preview_open"
            data-text="dbc_preview"></pre>
+    </div>
+  </div>
+
+  <!-- What the filter box understands. Reachable from the box itself and from
+       Help, because the two ways people look for this are "what do I type
+       here" and "where is the documentation". -->
+  <div class="fixed inset-0 z-50 grid place-items-center bg-base-950/60"
+       data-show="dbc_help"
+       data-on-click="if ($event.target === $el) dbc_help = false">
+    <div class="surface-float flex max-h-[80vh] w-[620px] flex-col rounded-panel">
+      <div class="flex shrink-0 items-center border-b border-line px-4 py-2.5">
+        <h2 class="text-[13.5px] font-semibold text-ink">Filtering rows</h2>
+        <button type="button" class="ml-auto text-ink-faint hover:text-ink"
+                data-on-click="dbc_help = false"><%- icon("close", 14) %></button>
+      </div>
+
+      <div class="min-h-0 flex-1 overflow-y-auto px-4 py-3 text-[12.5px]
+                  leading-relaxed text-ink-dim selectable">
+
+        <p class="mb-3">
+          Type a phrase to search every text column, or a condition to search
+          one column by name.
+        </p>
+
+        <dl class="dbc-help">
+          <dt>fire bolt</dt>
+          <dd>Rows holding that text in any string or localised column.</dd>
+
+          <dt>SpellLevel &gt; 60</dt>
+          <dd>Numbers compare as numbers. Also <code>&lt;</code>
+              <code>&lt;=</code> <code>&gt;=</code> <code>=</code>
+              <code>!=</code>.</dd>
+
+          <dt>Name LIKE 'Fire%'</dt>
+          <dd><code>%</code> stands for any run of characters and
+              <code>_</code> for exactly one. The whole value has to match.</dd>
+
+          <dt>Name CONTAINS 'bolt'</dt>
+          <dd>Anywhere in the value. <code>STARTS</code> and <code>ENDS</code>
+              work the same way.</dd>
+
+          <dt>SpellLevel &gt;= 60 AND Category = 0</dt>
+          <dd><code>AND</code>, <code>OR</code>, <code>NOT</code> and brackets.</dd>
+        </dl>
+
+        <h3 class="mb-1 mt-4 text-[12.5px] font-semibold text-ink">
+          Localised columns
+        </h3>
+        <p class="mb-2">
+          A localised field has one column per language, and its name carries a
+          space &mdash; which the filter reads as two words. Quote it, or join
+          it with a dot:
+        </p>
+        <dl class="dbc-help">
+          <dt>'Name_lang frFR' CONTAINS 'feu'</dt>
+          <dd>The French column of <code>Name_lang</code>.</dd>
+
+          <dt>Name_lang.frFR LIKE 'Boule%'</dt>
+          <dd>The same column, without reaching for the quote key.</dd>
+
+          <dt>Name_lang CONTAINS 'feu'</dt>
+          <dd>Falls back to the field's first column, which is whichever
+              language is leftmost.</dd>
+        </dl>
+
+        <h3 class="mb-1 mt-4 text-[12.5px] font-semibold text-ink">
+          Two things worth knowing
+        </h3>
+        <p class="mb-2">
+          Text comparisons ignore case, all of them.
+        </p>
+        <p>
+          Quoting a number asks for a text comparison, which is not the same
+          answer: <code>SpellLevel &gt; 10</code> keeps 11 and up, while
+          <code>SpellLevel &gt; '10'</code> keeps 2, 9 and 11 &mdash; because
+          "2" sorts after "10" as text.
+        </p>
+      </div>
     </div>
   </div>
 

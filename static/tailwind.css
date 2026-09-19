@@ -441,9 +441,28 @@
     @apply border-base-600 text-ink;
   }
 
-  .dbc-picker {
-    @apply shrink-0 rounded border border-line bg-base-950 px-1 py-0.5
-           text-[11.5px] text-ink-dim;
+  .dbc-help-button {
+    @apply grid h-[18px] w-[18px] shrink-0 place-items-center rounded-full
+           border border-line text-[11px] text-ink-faint transition-colors
+           duration-75;
+  }
+
+  .dbc-help-button:hover {
+    @apply border-accent-dim text-accent;
+  }
+
+  /* The filter reference. A definition list, because every entry is the same
+     shape: something to type, and what it does. */
+  .dbc-help dt {
+    @apply mt-2 font-mono text-[11.5px] text-accent;
+  }
+
+  .dbc-help dd {
+    @apply pl-3;
+  }
+
+  .dbc-help code {
+    @apply rounded bg-base-950 px-1 font-mono text-[11px] text-ink;
   }
 
   /* Said once, above the grid, and answerable in place. A dialog would stop
@@ -497,18 +516,35 @@
     @apply bg-base-700 text-accent;
   }
 
-  /* The tab strip scrolls once there are more tabs than room. A thin bar,
-     because a full-width one would be as tall as the tabs it sits under. */
-  .tab-strip {
-    scrollbar-width: thin;
+  /* A tab being read rather than worked in: the next table read replaces it.
+     Italic is the convention people already know from their editor, and it
+     says "not settled" without taking any more room. */
+  .is-preview {
+    @apply italic;
   }
 
+  /* The tab strip scrolls once there are more tabs than room.
+     `scrollbar-width` is deliberately absent: setting it makes Chromium use
+     its own thin scrollbar and ignore every ::-webkit-scrollbar rule below,
+     which is why this bar was full height and unstyled. One or the other,
+     never both.
+
+     Overlaid rather than laid out, so the bar does not take a third of the
+     height the tabs are clicked in. */
   .tab-strip::-webkit-scrollbar {
     height: 3px;
   }
 
+  .tab-strip::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
   .tab-strip::-webkit-scrollbar-thumb {
-    @apply bg-base-700;
+    @apply rounded-full bg-base-700;
+  }
+
+  .tab-strip:hover::-webkit-scrollbar-thumb {
+    @apply bg-base-600;
   }
 
   /* The heading over each half of the picker. */

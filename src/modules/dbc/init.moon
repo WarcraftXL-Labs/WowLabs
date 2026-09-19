@@ -33,6 +33,10 @@ json = Neutrino.json
 
 M = {}
 
+-- The answers the "Localised columns" setting accepts. A file written by
+-- hand with something else in it falls back rather than showing no columns.
+LOCALE_MODES = { present: true, all: true, workspace: true }
+
 -- One per table the user has opened, by name.
 sessions = {}
 
@@ -165,11 +169,6 @@ M.mount = (window, state) ->
       changes: active and changes.count(active.set) or 0
     }
 
-    -- The search picker's list. Every column of the open table, by the label
-    -- the header shows, so what is picked is what the query is written against.
-    state\set "dbc_columns", json.array (active and
-      [column.label for column in *active.columns] or {})
-
     -- Read on every refresh rather than once: the setting can change while
     -- the tool is open, and the list would keep the old behaviour otherwise.
     state\set "dbc_open_on", library.setting "open_on"
@@ -202,7 +201,9 @@ M.mount = (window, state) ->
     say (workspace.current! != nil) and err or nil
 
   --- Shows a table, opening it if this is the first time.
-  open_table = (name) ->
+  ---@param name string
+  ---@param pinned boolean Whether it keeps a tab of its own.
+  open_table = (name, pinned) ->
     return unless type(name) == "string" and name != ""
 
     session = sessions[name]
@@ -214,8 +215,8 @@ M.mount = (window, state) ->
 
       build = workspace.setting "build"
       locale = workspace.setting "locale"
-      spread = library.setting "all_locales"
-      ok, made = pcall editor.session, tbl, name, locale, build, spread
+      mode = library.setting "locales"
+      ok, made = pcall editor.session, tbl, name, locale, build, mode
       unless ok
         say "#{name} could not be read: #{tostring made}"
         return
@@ -234,28 +235,43 @@ M.mount = (window, state) ->
     state\set "dbc_locale_hint", ""
     state\set "dbc_locale_offer", ""
 
+    -- What the file carries, not what the grid is showing: with one column
+    -- per language the question does not arise, and with one column at the
+    -- workspace's locale the shown list is empty by definition.
     if library.setting("locale_hint") and not session.spread
-      slots = session.slots or {}
+      present = session.present or {}
       carries_ours = false
-      carries_ours = true for slot in *slots when slot == session.locale
+      carries_ours = true for slot in *present when slot == session.locale
 
-      if #slots > 0 and not carries_ours
-        state\set "dbc_locale_offer", slots[1]
+      if #present > 0 and not carries_ours
+        state\set "dbc_locale_offer", present[1]
         state\set "dbc_locale_hint",
           "#{name} has no text at #{session.locale}. It is written in
-          #{table.concat slots, ", "}."
+          #{table.concat present, ", "}."
 
-    -- One tab per table, reused. Opening the same one again brings it
-    -- forward rather than putting a second copy beside the first.
+    -- One tab per table, reused. Opening the same one again brings it forward
+    -- rather than putting a second copy beside the first.
+    --
+    -- An unpinned tab is the one being read rather than worked in: there is at
+    -- most one, and the next table read replaces it. Pinning is a double click
+    -- or the first edit - the two moments where the table stops being
+    -- something you glanced at.
     id = tab_id name
     tabs = state\get("tabs") or {}
-    known = false
-    known = true for tab in *tabs when tab.id == id
 
-    unless known
-      table.insert tabs, { :id, title: name, tool: "dbc" }
-      state\set "tabs", json.array tabs
+    kept = [tab for tab in *tabs when tab.id == id or not tab.preview]
+    known = nil
+    known = tab for tab in *kept when tab.id == id
 
+    if known
+      known.preview = nil if pinned
+    else
+      table.insert kept, {
+        :id, title: name, tool: "dbc"
+        preview: (not pinned) or nil
+      }
+
+    state\set "tabs", json.array kept
     state\set "active_tab", id
     state\set "tool", "dbc"
     state\set "dbc_row", 0
@@ -270,13 +286,41 @@ M.mount = (window, state) ->
     return nil unless active and type(index) == "number"
     active.columns[index]
 
+  -- Re-reads the folder, and the settings with it: asking for the list again
+  -- is what somebody does after changing where the files are or how the list
+  -- behaves, and a list that came back with the old behaviour would look like
+  -- the setting had not taken.
   window\handle "dbc:tables", ->
     reload_tables!
+    push_info!
     nil
 
-  window\handle "dbc:open", (name) ->
-    open_table name
+  -- A name, or a name and whether it keeps its own tab. The bare form is what
+  -- the menus and the tests use, and it keeps.
+  window\handle "dbc:open", (payload) ->
+    if type(payload) == "table"
+      open_table payload.name, (payload.pinned and true or false)
+    else
+      open_table payload, true
     nil
+
+  --- Gives the open table a tab of its own, if it was only being read.
+  --
+  -- Called after the first thing that is not reading. A table being edited in
+  -- a tab the next click would replace is a table whose edits look lost.
+  pin_active = ->
+    return unless active
+
+    id = tab_id active.name
+    tabs = state\get("tabs") or {}
+    changed = false
+
+    for tab in *tabs
+      continue unless tab.id == id and tab.preview
+      tab.preview = nil
+      changed = true
+
+    state\set "tabs", json.array tabs if changed
 
   window\handle "dbc:window", (payload) ->
     return nil unless active and type(payload) == "table"
@@ -297,6 +341,9 @@ M.mount = (window, state) ->
 
     ok, err = editor.set_cell active, payload.row, column, tostring payload.value
     if ok then say nil else say "#{column.label}: #{err}"
+
+    -- Editing is the other way a table stops being something you glanced at.
+    pin_active!
     refresh!
     nil
 
@@ -643,12 +690,11 @@ M.tool = tools.register {
     dbc_preview: ""
     dbc_preview_open: false
 
-    -- The search over rows: what was typed, why it could not be read, and the
-    -- column list the picker writes from.
+    -- The search over rows: what was typed, why it could not be read, and
+    -- whether the reference for writing one is open.
     dbc_query: ""
     dbc_query_error: ""
-    dbc_pick: ""
-    dbc_columns: json.array {}
+    dbc_help: false
 
     -- The banner offering the language the file is actually written in.
     dbc_locale_hint: ""
@@ -682,6 +728,12 @@ menus.extend "tools", {
   { label: "Refresh table list", action: "neutrino.invoke('dbc:tables')" }
 }
 
+-- The other way people look for this: not "what do I type in the box" but
+-- "where is the documentation". Same reference either way.
+menus.extend "help", {
+  { label: "Filtering rows", action: "dbc_help = true" }
+}
+
 sections.register {
   id: "dbc"
   label: "DBC Editor"
@@ -711,11 +763,18 @@ sections.register {
         a binary DBC in a diff says only that it changed."
     }
     {
-      type: "toggle"
-      path: "settings.dbc.all_locales"
-      label: "Show every language"
-      help: "One column per language the file actually carries, instead of one
-        at the workspace's. Languages the file has nothing in are left out."
+      type: "choice"
+      path: "settings.dbc.locales"
+      label: "Localised columns"
+      options: {
+        { value: "present", label: "Languages in the file" }
+        { value: "all", label: "All 14 languages" }
+        { value: "workspace", label: "The workspace's language only" }
+      }
+      help: "A localised field holds fourteen strings. Showing the ones the
+        file carries is right for reading and for translating; all fourteen is
+        how you fill in a language that is not there yet, since the column has
+        to exist before anything can be typed into it."
     }
     {
       type: "toggle"
@@ -742,7 +801,7 @@ sections.register {
   values: -> {
     source: library.setting "source"
     save_as: library.setting "save_as"
-    all_locales: library.setting "all_locales"
+    locales: library.setting "locales"
     locale_hint: library.setting "locale_hint"
     open_on: library.setting "open_on"
   }
@@ -755,7 +814,7 @@ sections.register {
     return nil, err unless ok
 
     library.set "save_as", values.save_as == "lua" and "lua" or "dbc"
-    library.set "all_locales", values.all_locales and true or false
+    library.set "locales", LOCALE_MODES[values.locales] and values.locales or "present"
     library.set "locale_hint", values.locale_hint and true or false
     library.set "open_on", values.open_on == "double" and "double" or "single"
 
@@ -769,11 +828,13 @@ sections.register {
       sessions = {}
       active = nil
     else
-      spread = library.setting "all_locales"
+      mode = library.setting "locales"
       for _, session in pairs sessions
-        session.spread = spread and true or false
+        session.mode = mode
+        session.slots = editor.slots_for mode, session.present
+        session.spread = session.slots != nil
         session.columns = editor.columns session.schema, session.locale,
-          (spread and session.slots or nil)
+          session.slots
         session.widths = {}
         session.sort = nil
         session.stale = true

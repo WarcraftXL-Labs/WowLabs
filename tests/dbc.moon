@@ -653,7 +653,7 @@ t.check "the languages a file carries are found",
   (table.concat slots, ",") == "enUS,frFR", table.concat slots, ","
 
 spread = editor.session (library.open "ItemBagFamily"), "ItemBagFamily", "frFR",
-  BUILD, true
+  BUILD, "present"
 localised = [column for column in *spread.columns when column.field == "Name_lang"]
 
 t.check "each one gets a column", #localised == 2, "#{#localised} columns"
@@ -669,6 +669,43 @@ t.check "and both cover the whole localised block",
 
 t.check "a language the file has nothing in gets no column",
   #[column for column in *spread.columns when column.extra == "deDE"] == 0
+
+-- The one thing "the languages present" cannot do: there is no column to type
+-- into for a language the file does not carry yet.
+every = editor.session (library.open "ItemBagFamily"), "ItemBagFamily", "frFR",
+  BUILD, "all"
+all_localised = [column for column in *every.columns when column.field == "Name_lang"]
+
+t.check "asking for all of them gives a column per slot",
+  #all_localised == #editor.LOCALES, "#{#all_localised} columns"
+t.check "including one the file has nothing in",
+  #[column for column in *every.columns when column.extra == "deDE"] == 1
+
+t.check "and the workspace's own locale alone is still a choice",
+  #[column for column in *session.columns when column.field == "Name_lang"] == 1
+
+-- ═══════════════════════════════════════════════════════════════════════════
+
+t.section "Naming a localised column in a filter"
+
+-- Its label carries a space, and the filter splits on whitespace - so the two
+-- spellings that survive tokenising both have to reach the same column.
+editor.set_query spread, "'Name_lang frFR' CONTAINS 'Sac 3'"
+t.check "quoted, it finds the row",
+  editor.visible(spread) == 1 and (editor.at spread, 1) == 3,
+  "#{editor.visible spread} rows"
+
+editor.set_query spread, "Name_lang.enUS CONTAINS 'Bag 4'"
+t.check "dotted, it finds the row in the other language",
+  editor.visible(spread) == 1 and (editor.at spread, 1) == 4,
+  "#{editor.visible spread} rows"
+
+-- The dot has to pick the language, not ignore it.
+editor.set_query spread, "Name_lang.enUS CONTAINS 'Sac 4'"
+t.check "and does not answer for a language it was not given",
+  editor.visible(spread) == 0, "#{editor.visible spread} rows"
+
+editor.set_query spread, ""
 
 t.load_native!
 
@@ -731,6 +768,68 @@ app\on "ready", ->
       window\eval "[...document.querySelectorAll('.dbc-table')]
         .filter(el => el.hasAttribute('data-disabled'))
         .map(el => el.innerText.trim()).join(',')"
+
+    t.section "Reading before keeping"
+
+    -- With two clicks to keep, one click still opens the table - you can read
+    -- it, sort it, search it - but into a tab the next one replaces. Nothing
+    -- about that is visible from the store alone, so this drives the list.
+    library.set "open_on", "double"
+    window\exec_js "neutrino.invoke('dbc:tables')"
+
+    -- The setting reaches the page through an invoke and a store push, so it
+    -- is not there the instant Lua wrote it. Clicking before it arrives tests
+    -- the behaviour that is being changed away from.
+    t.check "the list is told that opening now takes two clicks",
+      (t.wait_until -> (window\eval "nui.get('dbc_open_on')") == "double"),
+      tostring window\eval "nui.get('dbc_open_on')"
+
+    tab_titles = -> window\eval "nui.get('tabs').map(t => t.id).join(',')"
+    click = (name) -> window\exec_js "[...document.querySelectorAll('.dbc-table')]
+      .find(el => el.innerText.trim() === '#{name}').click()"
+
+    click "ItemBagFamily"
+    t.check "a single click opens the table",
+      (t.wait_until -> (window\eval "nui.get('dbc_open')") == "ItemBagFamily"),
+      tostring window\eval "nui.get('dbc_open')"
+
+    t.check "into a tab marked as being read",
+      (window\eval "nui.get('tabs').some(t => t.id === 'dbc:ItemBagFamily' && t.preview)") == true,
+      tab_titles!
+
+    click "WorldSafeLocs"
+    t.check "reading another one replaces it rather than stacking up",
+      (t.wait_until -> (tab_titles!) == "dbc:WorldSafeLocs"), tab_titles!
+
+    -- Double click keeps it. So does an edit, which is the other moment a
+    -- table stops being something you glanced at.
+    window\exec_js "[...document.querySelectorAll('.dbc-table')]
+      .find(el => el.innerText.trim() === 'ItemBagFamily')
+      .dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))"
+
+    bags_kept = -> window\eval "nui.get('tabs').some(t => t.id === 'dbc:ItemBagFamily' && !t.preview)"
+    none_previewed = -> window\eval "nui.get('tabs').every(t => !t.preview)"
+
+    t.check "a double click gives it a tab of its own",
+      (t.wait_until -> bags_kept! == true), tab_titles!
+
+    click "WorldSafeLocs"
+    t.check "and a kept tab is no longer replaced by the next read",
+      (t.wait_until -> (tab_titles!)\match("dbc:ItemBagFamily") != nil), tab_titles!
+
+    window\exec_js "document.querySelector('.dbc-cell').value = '12';
+      document.querySelector('.dbc-cell').dispatchEvent(new Event('change'))"
+
+    t.check "editing a read-only tab keeps it too",
+      (t.wait_until -> none_previewed! == true), tab_titles!
+
+    -- Back to opening on one click for everything that follows.
+    library.set "open_on", "single"
+    window\exec_js "neutrino.invoke('dbc:tables')"
+    window\exec_js "nui.get('tabs').forEach(t => neutrino.invoke('shell:close-tab', t.id))"
+    t.wait_until -> (window\eval "nui.get('tabs').length") == 0
+
+    -- ═══════════════════════════════════════════════════════════════════════
 
     t.section "Opening one"
 

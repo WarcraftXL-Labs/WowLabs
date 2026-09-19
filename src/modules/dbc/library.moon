@@ -44,10 +44,12 @@ M.DEFAULTS = {
   -- diff says only that it changed.
   save_as: "dbc"
 
-  -- Every language the file carries, each in its own column. On by default:
-  -- a table that holds four translations and shows one is a table that looks
-  -- like it lost three.
-  all_locales: true
+  -- How many columns a localised field becomes. "present" is the default: a
+  -- table holding four translations and showing one looks like it lost three,
+  -- and all fourteen on a file carrying one would be thirteen empty columns.
+  -- "all" is for filling a language in that is not there yet, which is the
+  -- one case "present" cannot serve.
+  locales: "present"
 
   -- Offer to read and write at the language the file is actually written in,
   -- when that is not the workspace's.

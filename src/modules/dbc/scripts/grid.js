@@ -133,6 +133,13 @@ const dbcApply = async (rows) => {
 // invoke `dbc:set` and drop the answer, and the cell went on showing the
 // old text until a reload or the changed-rows view forced a redraw.
 window.dbcChoose = async (row, column, value) => {
+  // The editor behind the list goes first. It holds what the cell said before
+  // the choice, and on blur it commits that - over the value being chosen
+  // here. While it is open it also has the arrow keys.
+  const editing = picking
+  picking = null
+  if (editing) { try { editing.cancelEdit() } catch (err) { /* already gone */ } }
+
   const answer = await neutrino.invoke('dbc:set', {
     row: row, column: column, value: String(value),
   })
@@ -268,7 +275,7 @@ const buildGrid = async (columns) => {
       .find((c) => c.key === cell.getField())
     if (!nui.get('dbc_resolver') || !column || !column.foreign) return
     window.dbcPick(cell.getElement(), cell.getRow().getData()._i,
-      column.index, column.foreign)
+      column.index, column.foreign, cell)
   })
 
   grid.on('columnResized', (column) => {

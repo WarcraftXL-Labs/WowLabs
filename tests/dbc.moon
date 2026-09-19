@@ -1623,6 +1623,14 @@ app\on "ready", ->
       (t.wait_until -> (window\eval "nui.get('dbc_picker').table") == ""),
       tostring window\eval "nui.get('dbc_picker').table"
 
+    -- The editor the list opened over has to go with it. Left open it holds
+    -- what the cell said before the choice and commits that on blur, over the
+    -- value just picked - and it has the arrow keys in the meantime.
+    editors = -> window\eval "document.querySelectorAll('.dbc-grid input').length"
+
+    t.check "and the cell is no longer being edited",
+      (t.wait_until -> editors! == 0), tostring editors!
+
     window\exec_js "nui.set('dbc_resolver', false)"
 
     window\exec_js "[...document.querySelectorAll('.dbc-table')]

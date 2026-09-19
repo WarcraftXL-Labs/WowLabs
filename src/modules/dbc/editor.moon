@@ -31,26 +31,83 @@
 ffi = require "ffi"
 Neutrino = require "neutrino"
 changes = require "modules.dbc.changes"
+query = require "modules.dbc.query"
 
 fs = Neutrino.fs
 json = Neutrino.json
 
 M = {}
 
+--- What a column is wide before anyone drags it.
+-- Wide enough for a spell name at 12px, which is the longest thing most
+-- tables hold; everything else is narrower and can be dragged in.
+---@type integer
+M.DEFAULT_WIDTH = 150
+
 -- ═══════════════════════════════════════════════════════════════════════════
 -- Columns
 -- ═══════════════════════════════════════════════════════════════════════════
+
+--- The locale slots, in record order.
+--
+-- Mirrors lua-dbc's own table. Slots 14 and 15 exist in the record and have
+-- no name in any client, so they are not offered: a column headed "[14]" is a
+-- column nobody can act on.
+---@type string[]
+M.LOCALES = {
+  "enUS", "koKR", "frFR", "deDE", "enCN", "zhCN", "zhTW"
+  "enTW", "ruRU", "esES", "esMX", "ptPT", "ptBR", "itIT"
+}
+
+--- Which locale slots a table actually carries text in.
+--
+-- Sampled rather than scanned: a table of fifty thousand rows answers this in
+-- the first few hundred, and the question being asked - "which languages is
+-- this file translated into" - is a property of the file, not of any row.
+--
+-- A slot counts as populated when any sampled row has something in it.
+---@param tbl table DbcTable.
+---@param schema table
+---@param sample? integer How many rows to look at. Defaults to 256.
+---@return string[] slots In record order.
+M.populated_locales = (tbl, schema, sample = 256) ->
+  fields = [field for field in *schema.fields when field.kind == "loc" and not field.is_non_inline]
+  return {} if #fields == 0
+
+  total = tbl\Count!
+  looked = math.min total, sample
+  seen = {}
+
+  for index = 1, looked
+    ok, row = pcall tbl.GetRowByIndex, tbl, index
+    continue unless ok
+
+    for field in *fields
+      for slot in *M.LOCALES
+        continue if seen[slot]
+        read, value = pcall row.GetField, row, field.name, slot
+        seen[slot] = true if read and type(value) == "string" and value != ""
+
+  [slot for slot in *M.LOCALES when seen[slot]]
 
 --- The grid's columns, one per editable value in a record.
 --
 -- An inline array is one field and `count` cells: showing it as one cell would
 -- mean editing a Lua table in a text box. A localised column is the opposite -
--- 17 words of record, one cell, at the locale the workspace is set to.
+-- 17 words of record, and how many cells depends on what is being asked for.
+--
+-- With `slots` given, a localised field becomes one column per slot named in
+-- it, which is how a translator sees every language side by side. With none,
+-- it is a single column at the workspace's own locale. Sixteen columns per
+-- localised field regardless would put two hundred columns on a table that
+-- carries one language.
 ---@param schema table
 ---@param locale string Which slot a localised column reads and writes.
+---@param slots? string[] Locale slots to give a column each.
 ---@return table[]
-M.columns = (schema, locale) ->
+M.columns = (schema, locale, slots) ->
   columns = {}
+  spread = slots and #slots > 0 and slots or nil
 
   for field in *schema.fields
     -- A non-inline column is declared but not in the record; it has no bytes
@@ -68,6 +125,18 @@ M.columns = (schema, locale) ->
           width: field.width
           is_id: false
         }
+    elseif field.kind == "loc" and spread
+      for slot in *spread
+        table.insert columns, {
+          field: field.name
+          label: "#{field.name} #{slot}"
+          kind: field.kind
+          extra: slot
+          offset: field.offset
+          width: field.width
+          locale: slot
+          is_id: false
+        }
     else
       table.insert columns, {
         field: field.name
@@ -76,6 +145,7 @@ M.columns = (schema, locale) ->
         extra: field.kind == "loc" and locale or nil
         offset: field.offset
         width: field.width
+        locale: field.kind == "loc" and locale or nil
 
         -- Only when the ID is really in the record: on the 22 tables where it
         -- is not, the column marked isID describes the ordinal and there is
@@ -95,18 +165,35 @@ M.columns = (schema, locale) ->
 ---@param locale string Locale slot to edit.
 ---@param build string
 ---@return table session
-M.session = (tbl, name, locale, build) ->
+M.session = (tbl, name, locale, build, spread) ->
   schema = tbl\GetSchema!
   rows = tbl\Count!
+  slots = M.populated_locales tbl, schema
 
   session = {
     :name
     :locale
     table: tbl
     :schema
-    columns: M.columns schema, locale
+    slots: slots
+    spread: spread and true or false
+    columns: M.columns schema, locale, spread and slots or nil
     has_id: schema.has_id_inline and true or false
     format: tbl\GetFormatName!
+
+    -- Which rows the grid pages over, in the order it shows them. Left nil
+    -- while the table is unsorted and unfiltered, because the answer is then
+    -- "every row, in order" and building fifty thousand entries to say so
+    -- would cost more than every other thing opening a table does.
+    view: nil
+    query: nil
+    query_text: ""
+    sort: nil
+
+    -- Per column, and only where the user has moved one. Kept on the session
+    -- rather than in settings: a width is a reaction to what is on screen
+    -- now, and a file of them for 246 tables would outlive its usefulness.
+    widths: {}
 
     -- Where each row was in the file that was opened. A row that was not
     -- there has no such index, and the key is what names it instead. This is
@@ -228,6 +315,158 @@ M.id_at = (session, index) ->
   read, id = pcall row.GetID, row
   read and id or nil
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Order
+-- ═══════════════════════════════════════════════════════════════════════════
+
+--- The real row index behind a position in the grid.
+--
+-- Sorting and filtering change which row is drawn where, and nothing else may
+-- change with them: a row is still its index in the file, that is still what
+-- an edit records, and this is the one place the two meet.
+---@param session table
+---@param position integer 1-based position in the grid.
+---@return integer|nil index
+M.at = (session, position) ->
+  return nil unless type(position) == "number" and position >= 1
+  M.reindex session if session.stale
+  return session.view[position] if session.view
+  position <= #session.origin and position or nil
+
+--- How many rows the grid has to show.
+---@param session table
+---@return integer
+M.visible = (session) ->
+  M.reindex session if session.stale
+  session.view and #session.view or #session.origin
+
+--- Where a row index sits in the grid, or nil when the filter hides it.
+---@param session table
+---@param index integer
+---@return integer|nil position
+M.position_of = (session, index) ->
+  M.reindex session if session.stale
+  return index unless session.view
+  for position = 1, #session.view
+    return position if session.view[position] == index
+  nil
+
+--- The column a name refers to, by label first and field name second.
+---@private
+column_named = (session, name) ->
+  return nil unless type(name) == "string"
+  lowered = name\lower!
+
+  for column in *session.columns
+    return column if column.label\lower! == lowered
+  for column in *session.columns
+    return column if column.field\lower! == lowered
+  nil
+
+--- Rebuilds the order from the query and the sort.
+--
+-- Called after anything that changes which rows exist or where they are. The
+-- whole order is built again rather than repaired: a deletion moves every row
+-- after it, and a repair that got one case wrong would show the wrong row
+-- under the right number, which is the worst failure this grid has.
+---@param session table
+M.reindex = (session) ->
+  total = #session.origin
+  session.stale = false
+
+  unless session.query or session.sort
+    session.view = nil
+    return
+
+  kept = {}
+
+  if session.query
+    -- A bare term searches the text columns only. Every column of every row
+    -- would be five million reads on Spell, and nobody typing "fireball"
+    -- means "or any record whose SpellLevel is 3".
+    text_columns = [c for c in *session.columns when c.kind == "str" or c.kind == "loc"]
+
+    at = 0
+    get = (name, needle) ->
+      if name == nil
+        lowered = needle\lower!
+        for column in *text_columns
+          value = M.read session, at, column
+          return true if value != "" and (value\lower!\find lowered, 1, true) != nil
+        return false
+
+      column = column_named session, name
+      return nil unless column
+      (M.read session, at, column)
+
+    for index = 1, total
+      at = index
+      ok, matched = pcall session.query, get
+      table.insert kept, index if ok and matched
+  else
+    table.insert kept, index for index = 1, total
+
+  if session.sort
+    column = session.columns[session.sort.column]
+    if column
+      -- The key is read once per row rather than on every comparison: a sort
+      -- of fifty thousand rows makes about eight hundred thousand of those,
+      -- and each one is a field read through a proxy.
+      numeric = column.kind != "str" and column.kind != "loc"
+      keys = {}
+      for index in *kept
+        value = M.read session, index, column
+        keys[index] = numeric and (tonumber(value) or 0) or value\lower!
+
+      descending = session.sort.descending
+      table.sort kept, (a, b) ->
+        left, right = keys[a], keys[b]
+        -- The index breaks every tie, so two equal rows keep their order and
+        -- the sort does not reshuffle them on each redraw.
+        return a < b if left == right
+        if descending then left > right else left < right
+
+  session.view = kept
+
+--- Sets the query, and answers whether it could be read.
+---@param session table
+---@param text string
+---@return boolean ok, string|nil err
+M.set_query = (session, text) ->
+  text = tostring(text or "")
+  predicate, err = query.compile text
+
+  if err
+    -- The old order stays: a half-typed query should not empty the grid.
+    return false, err
+
+  session.query_text = text
+  session.query = predicate
+  M.reindex session
+  true, nil
+
+--- Sorts by a column, or stops sorting.
+--
+-- Three states in one action, because a header has one place to click:
+-- ascending, then descending, then back to the file's own order. A sort that
+-- could only be turned off somewhere else is a sort people leave on.
+---@param session table
+---@param index integer Column index, or nil to clear.
+---@return table|nil sort
+M.set_sort = (session, index) ->
+  if index == nil or not session.columns[index]
+    session.sort = nil
+  elseif session.sort and session.sort.column == index
+    if session.sort.descending
+      session.sort = nil
+    else
+      session.sort = { column: index, descending: true }
+  else
+    session.sort = { column: index, descending: false }
+
+  M.reindex session
+  session.sort
+
 --- The block of cells the grid is showing.
 --
 -- Bound to the visible window and nothing else: a table of forty thousand rows
@@ -239,28 +478,72 @@ M.id_at = (session, index) ->
 ---@param row_count integer
 ---@param col_count integer
 ---@return table window
+--- A column's width, as the user left it.
+---@param session table
+---@param index integer
+---@return integer
+M.width_of = (session, index) -> session.widths[index] or M.DEFAULT_WIDTH
+
+--- Sets one column's width, within what is usable.
+--
+-- Bounded because a column dragged to nothing cannot be dragged back: the
+-- handle would have no width to grab.
+---@param session table
+---@param index integer
+---@param width number
+M.set_width = (session, index, width) ->
+  return unless session.columns[index]
+  session.widths[index] = math.max 48, math.min 900, math.floor width
+
+--- Where each column starts, cumulatively.
+--
+-- The grid drew every column at the same width, which made "which column is
+-- under this scroll offset" a division. With widths of their own it becomes a
+-- search, so the offsets are computed here, once, and the page is given them
+-- rather than each cell's width alone.
+---@param session table
+---@return number[] offsets 1-based; offsets[n] is where column n starts.
+---@return number total
+---@private
+column_offsets = (session) ->
+  offsets = {}
+  running = 0
+
+  for index = 1, #session.columns
+    offsets[index] = running
+    running += M.width_of session, index
+
+  offsets[#session.columns + 1] = running
+  offsets, running
+
 M.window = (session, first_row, first_col, row_count, col_count) ->
-  total_rows = session.table\Count!
+  total_rows = M.visible session
   total_cols = #session.columns
+  offsets, total_width = column_offsets session
 
   first_row = math.max 0, (math.min first_row, (math.max 0, total_rows - 1))
   first_col = math.max 0, (math.min first_col, (math.max 0, total_cols - 1))
 
+  sorted = session.sort and session.sort.column or 0
+
   columns = {}
   for offset = 1, col_count
-    column = session.columns[first_col + offset]
+    at = first_col + offset
+    column = session.columns[at]
     break unless column
     table.insert columns, {
       label: column.label
       kind: column.kind
       extra: type(column.extra) == "string" and column.extra or nil
-      index: first_col + offset
+      index: at
+      w: M.width_of session, at
+      sorted: at == sorted and (session.sort.descending and "desc" or "asc") or nil
     }
 
   rows = {}
   for offset = 1, row_count
-    index = first_row + offset
-    break if index > total_rows
+    index = M.at session, first_row + offset
+    break unless index
 
     key = key_at session, index
     cells = {}
@@ -296,6 +579,12 @@ M.window = (session, first_row, first_col, row_count, col_count) ->
     rows: json.array rows
     total_rows: total_rows
     total_cols: total_cols
+
+    -- Where the drawn block starts, and how wide the whole table is. The page
+    -- can no longer work either out by multiplying, so it is told.
+    x: offsets[first_col + 1] or 0
+    offsets: json.array offsets
+    total_width: total_width
   }
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -433,6 +722,12 @@ remove_row = (session, index) ->
   return nil, tostring err unless deleted
 
   entry = table.remove session.origin, index
+
+  -- Every row after this one just moved, so whatever order the grid was
+  -- paging over describes rows that are no longer where it says. Marked
+  -- rather than rebuilt, because a deletion is often one of several and the
+  -- query only has to run again before the next draw.
+  session.stale = true
   bytes, entry
 
 --- Puts one back where it was.
@@ -442,6 +737,7 @@ restore_row = (session, index, bytes, origin) ->
   return false, tostring err unless ok
 
   table.insert session.origin, index, origin
+  session.stale = true
   true
 
 --- Adds a blank row at the end.
@@ -465,6 +761,7 @@ M.add_row = (session) ->
   key = "n:#{session.created}"
 
   table.insert session.origin, { :key, created: true }
+  session.stale = true
   changes.added session.set, { :key, :id }, { kind: "create" }
 
   table.insert session.stack, { kind: "add", :index, :key }
@@ -492,6 +789,7 @@ M.duplicate_row = (session, index) ->
   key = "n:#{session.created}"
 
   table.insert session.origin, { :key, created: true }
+  session.stale = true
   changes.added session.set, { :key, :id }, {
     kind: "duplicate"
     source: source.pristine

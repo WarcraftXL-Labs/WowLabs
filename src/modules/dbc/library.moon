@@ -38,6 +38,25 @@ M.DEFAULTS = {
   -- which is right for an extracted client and wrong for the half-dozen
   -- layouts people actually have, so it can be said outright.
   source: ""
+
+  -- What Save writes. The table itself, or the script that would produce it -
+  -- which is the one to keep under version control, since a binary DBC in a
+  -- diff says only that it changed.
+  save_as: "dbc"
+
+  -- Every language the file carries, each in its own column. On by default:
+  -- a table that holds four translations and shows one is a table that looks
+  -- like it lost three.
+  all_locales: true
+
+  -- Offer to read and write at the language the file is actually written in,
+  -- when that is not the workspace's.
+  locale_hint: true
+
+  -- Whether a click opens a table or only selects it. Double is for people
+  -- who move through the list with the keyboard and do not want a fifty
+  -- thousand row table opened at every step.
+  open_on: "single"
 }
 
 document = nil

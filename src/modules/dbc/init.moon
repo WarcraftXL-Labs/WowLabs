@@ -60,22 +60,86 @@ M.mount = (window, state) ->
 
   say = (message) -> state\set "dbc_message", message or ""
 
-  --- Moves the grid's scrollbars, which belong to the page.
+  --- Asks the page to put the grid back at the top.
   --
-  -- Lua decides which block is drawn and the page decides where it is looking,
-  -- so anything that moves the view from here has to move both or the grid
-  -- shows one part of the table while the bar says another.
+  -- Through the store rather than by reaching in and setting scrollTop, which
+  -- races the redraw in both directions: done too early the incoming table's
+  -- layout undoes it, done too late it throws away a scroll made in between.
+  -- The counter says *that* the view should go home and the page does it once
+  -- it has drawn what it is going home to.
   scroll_to = (top) ->
-    window\exec_js "
-      const scroller = document.querySelector('.dbc-scroller')
-      if (scroller) { scroller.scrollTop = #{top}; scroller.scrollLeft = 0 }"
+    state\set "dbc_top", (tonumber(state\get "dbc_top") or 0) + 1
+
+  --- Installs what the page needs that markup cannot express.
+  --
+  -- Written into the page once rather than inlined in the header: the column
+  -- drag is twenty lines of pointer handling, and a copy per column would be
+  -- a copy per column to keep right.
+  --
+  -- The columns are left alone while the pointer moves and a single guide line
+  -- follows it instead. Redrawing six hundred inputs on every mousemove would
+  -- make dragging the slowest thing in the grid.
+  install_page_helpers = ->
+    window\exec_js [==[
+      // Puts the grid back at the top when Lua says the view has moved on to
+      // something else - another table, a search, a sort. Driven by a counter
+      // rather than by a position, because "should it be at the top" is an
+      // intention and scrollTop is a measurement that layout also changes.
+      let seenTop = null
+      nui.effect(() => {
+        const token = nui.get('dbc_top')
+        if (seenTop === token) return
+        const first = seenTop === null
+        seenTop = token
+        if (first) return
+
+        // Decided now, acted on next frame. A view already at the top has
+        // nothing to put back, and scheduling a reset anyway would undo a
+        // scroll made in the frame between the two.
+        const scroller = document.querySelector('.dbc-scroller')
+        if (!scroller || scroller.scrollTop === 0) return
+
+        requestAnimationFrame(() => {
+          scroller.scrollTop = 0
+          scroller.scrollLeft = 0
+        })
+      })
+
+      window.dbcResize = (event, column, width) => {
+        event.preventDefault()
+        event.stopPropagation()
+
+        const startX = event.clientX
+        const guide = document.createElement('div')
+        guide.className = 'dbc-guide'
+        guide.style.left = startX + 'px'
+        document.body.appendChild(guide)
+
+        let next = width
+
+        const move = (moved) => {
+          next = Math.max(48, Math.min(900, width + (moved.clientX - startX)))
+          guide.style.left = (startX + (next - width)) + 'px'
+        }
+
+        const done = () => {
+          document.removeEventListener('pointermove', move)
+          document.removeEventListener('pointerup', done)
+          guide.remove()
+          neutrino.invoke('dbc:resize', { column: column, width: next })
+        }
+
+        document.addEventListener('pointermove', move)
+        document.addEventListener('pointerup', done)
+      }
+    ]==]
 
   --- Pushes the block the grid is showing.
   push_window = ->
     unless active
       state\set "dbc_grid", {
-        row: 0, col: 0, total_rows: 0, total_cols: 0
-        columns: json.array {}, rows: json.array {}
+        row: 0, col: 0, total_rows: 0, total_cols: 0, total_width: 0, x: 0
+        columns: json.array {}, rows: json.array {}, offsets: json.array { 0 }
       }
       return
 
@@ -88,12 +152,27 @@ M.mount = (window, state) ->
 
     state\set "dbc_info", {
       rows: active and active.table\Count! or 0
+
+      -- What the search left. Equal to `rows` when nothing is filtered, which
+      -- is how the strip knows to say "2307 rows" rather than "2307 of 2307".
+      shown: active and editor.visible(active) or 0
+
       columns: active and #active.columns or 0
       has_id: active and active.has_id or false
       locale: active and active.locale or ""
+      spread: active and active.spread or false
       format: active and active.format or ""
       changes: active and changes.count(active.set) or 0
     }
+
+    -- The search picker's list. Every column of the open table, by the label
+    -- the header shows, so what is picked is what the query is written against.
+    state\set "dbc_columns", json.array (active and
+      [column.label for column in *active.columns] or {})
+
+    -- Read on every refresh rather than once: the setting can change while
+    -- the tool is open, and the list would keep the old behaviour otherwise.
+    state\set "dbc_open_on", library.setting "open_on"
 
     -- The shell's own keys: the menu entries and their shortcuts are guarded
     -- on these, and the status bar reads the first.
@@ -135,7 +214,8 @@ M.mount = (window, state) ->
 
       build = workspace.setting "build"
       locale = workspace.setting "locale"
-      ok, made = pcall editor.session, tbl, name, locale, build
+      spread = library.setting "all_locales"
+      ok, made = pcall editor.session, tbl, name, locale, build, spread
       unless ok
         say "#{name} could not be read: #{tostring made}"
         return
@@ -146,6 +226,24 @@ M.mount = (window, state) ->
     active = session
     at_row, at_col = 0, 0
     say nil
+
+    -- A file written in one language, opened at another, is the quiet way to
+    -- end up with a row holding two names: a read answers the slot that has
+    -- something in it and a write goes to the one the workspace named. Said
+    -- once, here, and only when the file disagrees with the setting.
+    state\set "dbc_locale_hint", ""
+    state\set "dbc_locale_offer", ""
+
+    if library.setting("locale_hint") and not session.spread
+      slots = session.slots or {}
+      carries_ours = false
+      carries_ours = true for slot in *slots when slot == session.locale
+
+      if #slots > 0 and not carries_ours
+        state\set "dbc_locale_offer", slots[1]
+        state\set "dbc_locale_hint",
+          "#{name} has no text at #{session.locale}. It is written in
+          #{table.concat slots, ", "}."
 
     -- One tab per table, reused. Opening the same one again brings it
     -- forward rather than putting a second copy beside the first.
@@ -220,7 +318,7 @@ M.mount = (window, state) ->
 
     index = tonumber(state\get "dbc_row") or 0
     unless index > 0
-      say "Choose a row first: click a cell in the one to copy."
+      say "Choose a row first: click the number of the row to copy."
       return nil
 
     made, err = editor.duplicate_row active, index
@@ -240,7 +338,7 @@ M.mount = (window, state) ->
 
     index = tonumber(state\get "dbc_row") or 0
     unless index > 0
-      say "Choose a row first: click a cell in the one to delete."
+      say "Choose a row first: click the number of the row to delete."
       return nil
 
     id = editor.id_at active, index
@@ -263,6 +361,64 @@ M.mount = (window, state) ->
     -- one deleted was the last.
     state\set "dbc_row", math.min index, active.table\Count!
     refresh!
+    nil
+
+  --- Searches the open table.
+  --
+  -- A query that will not parse leaves the grid as it was and says why. The
+  -- alternative - emptying the grid on every keystroke that is not yet a
+  -- whole query - would make the box unusable to type into.
+  window\handle "dbc:query", (text) ->
+    return nil unless active
+
+    ok, err = editor.set_query active, text
+    state\set "dbc_query_error", ok and "" or tostring err
+
+    -- Back to the top: the rows under the bar are a different set now, and a
+    -- scrollbar left where the unfiltered table had it would point past them.
+    at_row = 0
+    refresh!
+    scroll_to 0 if ok
+    nil
+
+  --- Sorts by a column, through ascending, descending and back to file order.
+  window\handle "dbc:sort", (index) ->
+    return nil unless active
+
+    editor.set_sort active, tonumber index
+    at_row = 0
+    refresh!
+    scroll_to 0
+    nil
+
+  --- Sets one column's width.
+  window\handle "dbc:resize", (payload) ->
+    return nil unless active and type(payload) == "table"
+
+    editor.set_width active, (tonumber payload.column), (tonumber(payload.width) or 0)
+    push_window!
+    nil
+
+  --- Reopens the table reading and writing at another language.
+  --
+  -- The columns change with it, so the session is rebuilt - but only after the
+  -- change set has been checked: rebuilding one with edits in it would leave
+  -- them recorded against slots nothing shows.
+  window\handle "dbc:use-locale", (slot) ->
+    return nil unless active and type(slot) == "string" and slot != ""
+
+    state\set "dbc_locale_hint", ""
+
+    if changes.count(active.set) > 0
+      say "#{active.name} has unsaved changes. Save or undo them before
+        changing language."
+      return nil
+
+    name = active.name
+    sessions[name] = nil
+    active = nil
+    workspace.set "locale", slot
+    open_table name
     nil
 
   window\handle "dbc:find", (text) ->
@@ -316,6 +472,23 @@ M.mount = (window, state) ->
 
     folder = workspace.output_dir!
     return "There is nowhere to write: open a workspace first." unless folder
+
+    -- The table, or the script that reproduces it. The same edits either way;
+    -- what differs is whether the result is a file a client can read or one a
+    -- person can review.
+    as_lua = library.setting("save_as") == "lua"
+
+    if as_lua
+      path = fs.join folder, "#{active.name}.lua"
+      ok, err = fs.write path, editor.script active
+      refresh!
+
+      unless ok
+        say tostring err
+        return "#{active.name} could not be saved: #{tostring err}"
+
+      say nil
+      return "#{active.name} written to #{path} as Lua"
 
     path = fs.join folder, "#{active.name}.dbc"
     written, err = editor.save active, path
@@ -379,6 +552,13 @@ M.mount = (window, state) ->
     reload_tables!
     refresh!
 
+  -- Not now: mount runs while the window is still coming up, and the store is
+  -- inlined into the document, so `nui` does not exist yet and the whole
+  -- script would fail - taking the column drag with it, silently.
+  window\on "did-finish-load", (detail) ->
+    return unless detail.url and detail.url\match "^neutrino://app/"
+    install_page_helpers!
+
   reload_tables!
   refresh!
 
@@ -390,7 +570,7 @@ icon = page.icon
 
 M.tool = tools.register {
   id: "dbc"
-  label: "Tables"
+  label: "DBC Editor"
   icon: "table"
   description: "Open the client's DBC tables and edit them row by row."
 
@@ -439,7 +619,7 @@ M.tool = tools.register {
     {
       id: "save"
       icon: "save"
-      title: "Save as DBC"
+      title: "Save"
       action: "neutrino.invoke('dbc:save')"
     }
   }
@@ -463,14 +643,35 @@ M.tool = tools.register {
     dbc_preview: ""
     dbc_preview_open: false
 
+    -- The search over rows: what was typed, why it could not be read, and the
+    -- column list the picker writes from.
+    dbc_query: ""
+    dbc_query_error: ""
+    dbc_pick: ""
+    dbc_columns: json.array {}
+
+    -- The banner offering the language the file is actually written in.
+    dbc_locale_hint: ""
+    dbc_locale_offer: ""
+
+    -- Whether the table list opens on one click or two, and which entry is
+    -- merely picked out while waiting for the second.
+    dbc_open_on: library.setting "open_on"
+    dbc_picked: ""
+
+    -- Bumped whenever the view should return to the top. The page watches it;
+    -- the number itself means nothing.
+    dbc_top: 0
+
     dbc_info: {
-      rows: 0, columns: 0, has_id: false, format: "", changes: 0
+      rows: 0, shown: 0, columns: 0, has_id: false, format: "", changes: 0
+      spread: false
       locale: workspace.setting "locale"
     }
 
     dbc_grid: {
-      row: 0, col: 0, total_rows: 0, total_cols: 0
-      columns: json.array {}, rows: json.array {}
+      row: 0, col: 0, total_rows: 0, total_cols: 0, total_width: 0, x: 0
+      columns: json.array {}, rows: json.array {}, offsets: json.array { 0 }
     }
   }
 
@@ -483,10 +684,10 @@ menus.extend "tools", {
 
 sections.register {
   id: "dbc"
-  label: "Tables"
+  label: "DBC Editor"
   icon: "table"
-  description: "Where the client's DBC files are, and where edited ones go.
-    The output folder is the workspace's."
+  description: "Where the client's DBC files are, what Save writes, and how
+    the grid behaves. The output folder is the workspace's."
 
   fields: {
     {
@@ -497,19 +698,86 @@ sections.register {
       help: "Left empty, this is DBFilesClient inside the workspace, then
         Data\\DBFilesClient, then the workspace folder itself."
     }
+    {
+      type: "choice"
+      path: "settings.dbc.save_as"
+      label: "Save as"
+      options: {
+        { value: "dbc", label: "DBC file" }
+        { value: "lua", label: "Lua script" }
+      }
+      help: "The table itself, or the script that reproduces your changes
+        through lua-dbc. The script is the one to keep under version control:
+        a binary DBC in a diff says only that it changed."
+    }
+    {
+      type: "toggle"
+      path: "settings.dbc.all_locales"
+      label: "Show every language"
+      help: "One column per language the file actually carries, instead of one
+        at the workspace's. Languages the file has nothing in are left out."
+    }
+    {
+      type: "toggle"
+      path: "settings.dbc.locale_hint"
+      label: "Offer the file's own language"
+      help: "When a table holds text in a language other than the workspace's,
+        offer to read and write at that one. Writing at the wrong slot leaves
+        a row holding two different names."
+    }
+    {
+      type: "choice"
+      path: "settings.dbc.open_on"
+      label: "Open a table on"
+      options: {
+        { value: "single", label: "Single click" }
+        { value: "double", label: "Double click" }
+      }
+      help: "Double click keeps a single click for selecting, which is what
+        you want when moving through the list rather than opening everything
+        on the way past."
+    }
   }
 
-  values: -> { source: library.setting "source" }
+  values: -> {
+    source: library.setting "source"
+    save_as: library.setting "save_as"
+    all_locales: library.setting "all_locales"
+    locale_hint: library.setting "locale_hint"
+    open_on: library.setting "open_on"
+  }
 
   apply: (values) ->
-    ok, err = library.set "source", type(values.source) == "string" and values.source or ""
+    wanted = type(values.source) == "string" and values.source or ""
+    moved = wanted != library.setting "source"
+
+    ok, err = library.set "source", wanted
     return nil, err unless ok
 
-    -- The folder moving means a different set of files; what is open belongs
-    -- to the folder it came from.
-    library.close!
-    sessions = {}
-    active = nil
+    library.set "save_as", values.save_as == "lua" and "lua" or "dbc"
+    library.set "all_locales", values.all_locales and true or false
+    library.set "locale_hint", values.locale_hint and true or false
+    library.set "open_on", values.open_on == "double" and "double" or "single"
+
+    -- The folder moving means a different set of files, so what is open
+    -- belongs to a folder that is no longer the one being edited. Nothing
+    -- else here does: a column that appears or disappears is a different view
+    -- of the same records, and dropping the sessions for it would throw away
+    -- every unsaved change to make a display setting take effect.
+    if moved
+      library.close!
+      sessions = {}
+      active = nil
+    else
+      spread = library.setting "all_locales"
+      for _, session in pairs sessions
+        session.spread = spread and true or false
+        session.columns = editor.columns session.schema, session.locale,
+          (spread and session.slots or nil)
+        session.widths = {}
+        session.sort = nil
+        session.stale = true
+
     true
 }
 

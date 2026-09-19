@@ -11,9 +11,9 @@
 -- and the visible block are placed inside it at the offset that matches the
 -- scroll, and scrolling asks Lua for the block that is now in view.
 --
--- Every row is the same height and every column the same width, which is what
--- makes that arithmetic possible at all: a grid that measured its own contents
--- could not know where row 40,000 is without laying out the 39,999 above it.
+-- Every row is the same height, which is what makes the vertical arithmetic a
+-- division. Columns are **not** the same width any more, so Lua sends where
+-- each one starts and the page searches that list instead of dividing.
 ---@module modules.dbc.view
 
 etlua = require "etlua"
@@ -28,7 +28,6 @@ M = {}
 ---@type table
 M.METRICS = {
   row: 22        -- a row, dense enough to read a screenful at once
-  column: 150    -- a column, wide enough for a spell name at 12px
   head: 26       -- the frozen header
   index: 72      -- the frozen row-index column
 
@@ -50,31 +49,61 @@ CONTEXT = [==[
   <span class="font-medium text-ink" data-text="dbc_open || 'No table open'"></span>
 
   <span class="text-ink-faint" data-show="dbc_open !== ''"
-        data-text="dbc_info.rows + ' rows, ' + dbc_info.columns + ' columns'"></span>
+        data-text="dbc_info.shown === dbc_info.rows
+          ? dbc_info.rows + ' rows, ' + dbc_info.columns + ' columns'
+          : dbc_info.shown + ' of ' + dbc_info.rows + ' rows'"></span>
 
   <!-- Which slot a localised column is being read and written at. Silence here
        is how a frFR client ends up with an enUS name written over it. -->
   <span class="rounded border border-line px-1.5 text-[11.5px] text-ink-dim"
-        data-show="dbc_open !== ''"
+        data-show="dbc_open !== '' && !dbc_info.spread"
         data-text="'Text: ' + dbc_info.locale"></span>
+
+  <span class="rounded border border-line px-1.5 text-[11.5px] text-ink-faint"
+        data-show="dbc_open !== '' && dbc_info.spread">All languages</span>
 
   <span class="rounded border border-line px-1.5 text-[11.5px] text-ink-faint"
         data-show="dbc_open !== '' && !dbc_info.has_id"
         title="This table keeps no ID in its records, so a row is named by its position."
       >No ID column</span>
 
-  <!-- Only where there is an ID to find. On the 22 tables without one the
-       number in an ID column is the row's own position, and a box that
-       searched for it would be a box that did nothing. -->
-  <form class="flex items-center gap-1" data-show="dbc_open !== '' && dbc_info.has_id"
-        data-on-submit="$event.preventDefault(); neutrino.invoke('dbc:find', dbc_find)">
-    <input type="text" spellcheck="false" placeholder="Find ID"
-           class="w-24 rounded border border-line bg-base-950 px-2 py-0.5
+  <!-- The search. A column picked from the list is written into the box rather
+       than applied on its own: the box is the whole query, and a picker that
+       set a hidden second filter would mean two places to look when the grid
+       shows something unexpected. -->
+  <form class="ml-auto flex items-center gap-1" data-show="dbc_open !== ''"
+        data-on-submit="$event.preventDefault(); neutrino.invoke('dbc:query', dbc_query)">
+
+    <select class="dbc-picker" data-model="dbc_pick"
+            data-on-change="
+              if ($el.value) {
+                dbc_query = (dbc_query ? dbc_query.trim() + ' AND ' : '') + $el.value + ' ';
+                dbc_pick = '';
+                const box = $el.parentElement.querySelector('input');
+                if (box) { box.focus(); box.setSelectionRange(dbc_query.length, dbc_query.length) }
+              }">
+      <option value="">Column</option>
+      <template data-for="column in dbc_columns">
+        <option data-attr-value="column" data-text="column"></option>
+      </template>
+    </select>
+
+    <input type="text" spellcheck="false"
+           placeholder="Name LIKE 'Fire%' AND SpellLevel > 10"
+           class="w-[300px] rounded border border-line bg-base-950 px-2 py-0.5
                   text-[12px] text-ink"
-           data-model="dbc_find">
+           data-class-is-bad="dbc_query_error !== ''"
+           data-attr-title="dbc_query_error"
+           data-model="dbc_query"
+           data-on-keydown="if ($event.key === 'Escape') {
+             dbc_query = ''; neutrino.invoke('dbc:query', '') }">
+
+    <button type="button" class="dbc-chip" data-show="dbc_query !== ''"
+            data-on-click="dbc_query = ''; neutrino.invoke('dbc:query', '')"
+            title="Clear the search">Clear</button>
   </form>
 
-  <span class="ml-auto truncate pl-3 text-danger" data-show="dbc_message !== ''"
+  <span class="truncate pl-3 text-danger" data-show="dbc_message !== ''"
         data-text="dbc_message"></span>
 </div>
 ]==]
@@ -95,11 +124,18 @@ PANEL = [==[
   <div class="min-h-0 flex-1 overflow-y-auto p-1"
        data-for="entry in dbc_tables.filter(e => e.name.toLowerCase().includes(dbc_filter.toLowerCase()))">
     <template>
+      <!-- One click or two, as the settings say. On double, a single click
+           still picks the entry out: moving through a list of two hundred
+           tables should not open a fifty thousand row one on the way past. -->
       <button type="button" class="dbc-table"
               data-class-is-open="entry.name === dbc_open"
+              data-class-is-picked="entry.name === dbc_picked && entry.name !== dbc_open"
               data-attr-data-disabled="!entry.editable"
               data-attr-title="entry.editable ? entry.name : entry.name + ': no definition for this build'"
-              data-on-click="if (entry.editable) neutrino.invoke('dbc:open', entry.name)">
+              data-on-click="dbc_picked = entry.name;
+                if (dbc_open_on === 'single' && entry.editable)
+                  neutrino.invoke('dbc:open', entry.name)"
+              data-on-dblclick="if (entry.editable) neutrino.invoke('dbc:open', entry.name)">
         <span class="truncate" data-text="entry.name"></span>
       </button>
     </template>
@@ -131,18 +167,37 @@ GRID = [==[
 
   <div class="flex min-h-0 flex-1 flex-col" data-show="dbc_open !== ''">
 
+    <!-- The language this file is really written in is not always the one the
+         workspace is set to, and writing a cell at the wrong slot leaves the
+         row holding two names. Offered rather than done, unless the setting
+         says otherwise. -->
+    <div class="dbc-banner" data-show="dbc_locale_hint !== ''">
+      <span data-text="dbc_locale_hint"></span>
+      <button type="button" class="dbc-chip"
+              data-on-click="neutrino.invoke('dbc:use-locale', dbc_locale_offer)"
+              data-text="'Switch to ' + dbc_locale_offer"></button>
+      <button type="button" class="dbc-chip" data-on-click="dbc_locale_hint = ''"
+        >Keep <span data-text="dbc_info.locale"></span></button>
+    </div>
+
     <!-- The scroller. Its content is the size of the whole table, so the bars
          are the table's; what is drawn inside is the visible block. -->
     <div class="dbc-scroller min-h-0 flex-1 overflow-auto"
          data-on-scroll="
            const first = Math.max(0, Math.floor($el.scrollTop / <%= metrics.row %>) - <%= metrics.margin_rows %>);
-           const left = Math.max(0, Math.floor($el.scrollLeft / <%= metrics.column %>) - <%= metrics.margin_columns %>);
+           const offs = dbc_grid.offsets;
+           let lo = 0, hi = offs.length - 1;
+           while (lo < hi) {
+             const mid = (lo + hi + 1) >> 1;
+             if (offs[mid] <= $el.scrollLeft) lo = mid; else hi = mid - 1;
+           }
+           const left = Math.max(0, lo - <%= metrics.margin_columns %>);
            if (first !== dbc_grid.row || left !== dbc_grid.col)
              neutrino.invoke('dbc:window', { row: first, col: left })">
 
       <div class="relative"
            data-attr-style="'height:' + (dbc_grid.total_rows * <%= metrics.row %> + <%= metrics.head %>)
-             + 'px;width:' + (dbc_grid.total_cols * <%= metrics.column %> + <%= metrics.index %>) + 'px'">
+             + 'px;width:' + (dbc_grid.total_width + <%= metrics.index %>) + 'px'">
 
         <!-- Header. Frozen at the top by sticking to the scroller, so it
              scrolls sideways with the columns it names. -->
@@ -150,12 +205,24 @@ GRID = [==[
              style="height: <%= metrics.head %>px">
           <div class="dbc-index sticky left-0 z-30 border-b border-line">#</div>
           <div class="flex" data-for="column in dbc_grid.columns"
-               data-attr-style="'margin-left:' + (dbc_grid.col * <%= metrics.column %>) + 'px'">
+               data-attr-style="'margin-left:' + dbc_grid.x + 'px'">
             <template>
-              <div class="dbc-head" style="width: <%= metrics.column %>px">
-                <span class="truncate" data-text="column.label"></span>
-                <span class="ml-auto pl-1.5 text-[10.5px] text-ink-faint"
+              <div class="dbc-head" data-attr-style="'width:' + column.w + 'px'">
+                <button type="button" class="dbc-sort"
+                        data-attr-title="'Sort by ' + column.label"
+                        data-on-click="neutrino.invoke('dbc:sort', column.index)">
+                  <span class="truncate" data-text="column.label"></span>
+                  <span class="dbc-arrow" data-show="column.sorted"
+                        data-text="column.sorted === 'desc' ? '▼' : '▲'"></span>
+                </button>
+
+                <span class="pl-1.5 text-[10.5px] text-ink-faint"
                       data-text="column.extra ? column.kind + ' ' + column.extra : column.kind"></span>
+
+                <!-- The drag handle. Its own element rather than the cell's
+                     edge, so clicking a header still sorts. -->
+                <span class="dbc-grip"
+                      data-on-mousedown="window.dbcResize($event, column.index, column.w)"></span>
               </div>
             </template>
           </div>
@@ -166,16 +233,30 @@ GRID = [==[
              data-attr-style="'top:' + (<%= metrics.head %> + dbc_grid.row * <%= metrics.row %>) + 'px'">
           <template>
             <div class="flex" style="height: <%= metrics.row %>px">
-              <div class="dbc-index sticky left-0 z-10"
+              <!-- The row's own number, and where a row is acted on. Picking a
+                   row by clicking a cell meant the act of reading one selected
+                   it; here the number is the handle and the cells are text. -->
+              <div class="dbc-index dbc-handle sticky left-0 z-10"
                    data-class-is-new="row.new"
-                   data-class-is-current="row.index === dbc_row">
+                   data-class-is-current="row.index === dbc_row"
+                   data-on-click="dbc_row = row.index">
                 <span data-text="row.index"></span>
                 <span class="ml-auto text-[10.5px] text-ink-faint"
-                      data-show="dbc_info.has_id" data-text="row.id"></span>
+                      data-show="dbc_info.has_id && dbc_row !== row.index"
+                      data-text="row.id"></span>
+
+                <span class="dbc-rowacts" data-show="dbc_row === row.index">
+                  <button type="button" title="Duplicate this row"
+                          data-on-click="dbc_row = row.index; neutrino.invoke('dbc:duplicate')"
+                    ><%- icon("copy", 12) %></button>
+                  <button type="button" title="Delete this row"
+                          data-on-click="dbc_row = row.index; neutrino.invoke('dbc:delete')"
+                    ><%- icon("trash", 12) %></button>
+                </span>
               </div>
 
               <div class="flex" data-for="cell, at in row.cells"
-                   data-attr-style="'margin-left:' + (dbc_grid.col * <%= metrics.column %>) + 'px'">
+                   data-attr-style="'margin-left:' + dbc_grid.x + 'px'">
                 <template>
                   <!-- One input per visible cell. A cell that is a field means
                        focus, selection and typing come from the browser rather
@@ -184,7 +265,7 @@ GRID = [==[
                        The commit is on change, which is blur or Enter, and
                        Enter blurs first so both take the same path. -->
                   <input type="text" spellcheck="false" class="dbc-cell"
-                         style="width: <%= metrics.column %>px"
+                         data-attr-style="'width:' + dbc_grid.columns[at].w + 'px'"
                          data-attr-value="cell.v"
                          data-attr-title="cell.e || ''"
                          data-class-is-dirty="cell.d"

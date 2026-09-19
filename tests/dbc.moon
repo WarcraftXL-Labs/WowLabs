@@ -83,6 +83,14 @@ write_fixture "Spell", (tbl) ->
   for id = 1, 2000
     tbl\Create id
 
+-- A second long one. Switching from a long table to a short one proves
+-- nothing about putting the scrollbar back: the short table's content is
+-- shorter than the scroll position, so the browser clamps it to the top on
+-- its own and a reset that never ran looks exactly the same.
+write_fixture "SpellIcon", (tbl) ->
+  for id = 1, 2000
+    tbl\Create id
+
 -- Not a table at all. A client folder has files in it that no definition
 -- describes, and the list has to survive them.
 fs.write "#{source}/NotATable.dbc", "rubbish"
@@ -98,7 +106,7 @@ entries = library.tables!
 by_name = {}
 by_name[entry.name] = entry for entry in *entries
 
-t.check "the folder is listed", #entries == 5, "#{#entries} entries"
+t.check "the folder is listed", #entries == 6, "#{#entries} entries"
 t.check "and in a stable order", entries[1].name == "CharBaseInfo",
   entries[1].name
 
@@ -471,6 +479,197 @@ t.check "and every cell in it reads the same", difference == nil,
 -- amount of Lua can settle.
 -- ═══════════════════════════════════════════════════════════════════════════
 
+-- ═══════════════════════════════════════════════════════════════════════════
+
+t.section "The search language"
+
+-- Against a made-up row, so what is being tested is the language rather than
+-- the records underneath it.
+query = require "modules.dbc.query"
+row = { Name: "Fireball", Level: 9, Icon: 0 }
+
+matches = (text) ->
+  predicate, err = query.compile text
+  return nil, err unless predicate
+  predicate (name, needle) ->
+    if name == nil
+      found = false
+      for _, value in pairs row
+        continue unless type(value) == "string"
+        found = true if (value\lower!\find needle\lower!, 1, true) != nil
+      return found
+    row[name]
+
+t.check "a comparison reads the column it names", (matches "Level > 5") == true
+t.check "and compares numbers as numbers", (matches "Level > 10") == false
+
+-- The one that bit: a quoted literal is text, and "9" > "10" is true where
+-- 9 > 10 is not. Getting this wrong made every quoted value a number.
+t.check "quoting asks for a text comparison", (matches "Level > '10'") == true
+t.check "and leaving it off asks for a number", (matches "Level > 10") == false
+
+t.check "LIKE takes SQL's wildcards", (matches "Name LIKE 'Fire%'") == true
+t.check "and anchors what it is given", (matches "Name LIKE 'ball'") == false
+t.check "_ stands for one character", (matches "Name LIKE 'F_reball'") == true
+t.check "CONTAINS looks anywhere", (matches "Name CONTAINS 'reba'") == true
+t.check "text comparisons ignore case", (matches "Name = FIREBALL") == true
+
+t.check "AND wants both", (matches "Level = 9 AND Icon = 0") == true
+t.check "OR wants either", (matches "Level = 99 OR Icon = 0") == true
+t.check "NOT turns one round", (matches "NOT (Level = 9)") == false
+t.check "and brackets group", (matches "(Level = 99 OR Icon = 0) AND Name CONTAINS 'fire'") == true
+
+t.check "one bare word searches the text columns", (matches "ball") == true
+t.check "several are one phrase, not a syntax error",
+  (matches "Fireball") == true and (matches "Fire ball") == false
+
+t.check "a column that is not there matches nothing",
+  (matches "Missing = 1") == false
+
+for bad_text in *{ "Name =", "Name LIKE 'x", "(Level > 1", "= 3" }
+  found, why = matches bad_text
+  t.check "#{bad_text} is refused rather than guessed", found == nil and why != nil,
+    tostring why
+
+-- ═══════════════════════════════════════════════════════════════════════════
+
+t.section "Searching"
+
+-- Its own session: a query, a sort and a width all live on one, and the
+-- sections above would be reading a filtered table if this shared theirs.
+finder = editor.session (library.open "ItemBagFamily"), "ItemBagFamily", "frFR", BUILD
+
+t.check "with no query the grid pages over every row",
+  editor.visible(finder) == 6, tostring editor.visible finder
+t.check "and position is index", (editor.at finder, 4) == 4
+
+ok, err = editor.set_query finder, "ID > 3"
+t.check "a comparison keeps the rows that match", ok and editor.visible(finder) == 3,
+  "#{tostring ok} #{tostring err} #{editor.visible finder}"
+t.check "and position now maps to the row it kept",
+  (editor.at finder, 1) == 4, tostring editor.at finder, 1
+
+editor.set_query finder, "Name_lang CONTAINS 'Sac 2'"
+t.check "a text operator reads the column it names",
+  editor.visible(finder) == 1 and (editor.at finder, 1) == 2,
+  "#{editor.visible finder} rows"
+
+-- The whole point of the bare form: type what you are looking for.
+editor.set_query finder, "Sac 5"
+t.check "a bare term searches the text columns",
+  editor.visible(finder) == 1 and (editor.at finder, 1) == 5,
+  "#{editor.visible finder} rows"
+
+t.check "and finds nothing when there is nothing",
+  (editor.set_query finder, "Sac 99") and editor.visible(finder) == 0,
+  tostring editor.visible finder
+
+editor.set_query finder, "ID > 3"
+bad, why = editor.set_query finder, "ID >"
+t.check "a query that will not parse is refused", bad == false and why != nil,
+  tostring why
+t.check "and leaves the rows that were there alone",
+  editor.visible(finder) == 3, tostring editor.visible finder
+
+editor.set_query finder, ""
+t.check "an empty query puts every row back", editor.visible(finder) == 6,
+  tostring editor.visible finder
+
+-- ═══════════════════════════════════════════════════════════════════════════
+
+t.section "Sorting"
+
+names = finder.columns[2]
+by_name = 2
+
+editor.set_sort finder, by_name
+t.check "ascending puts the first name first",
+  (editor.read finder, (editor.at finder, 1), names) == "Sac 1",
+  editor.read finder, (editor.at finder, 1), names
+
+sort = editor.set_sort finder, by_name
+t.check "the same column again turns it round", sort.descending == true
+t.check "and the last name is now first",
+  (editor.read finder, (editor.at finder, 1), names) == "Sac 6",
+  editor.read finder, (editor.at finder, 1), names
+
+t.check "a third time puts the file's own order back",
+  (editor.set_sort finder, by_name) == nil and (editor.at finder, 1) == 1
+
+-- Sorting must not move a row, only where it is drawn: everything recorded
+-- about an edit names the index, and a sort that renumbered rows would make
+-- every change in the set point somewhere else.
+editor.set_sort finder, by_name
+window_sorted = editor.window finder, 0, 0, 6, 4
+t.check "a sorted window still reports each row's real index",
+  window_sorted.rows[1].index == 1 and window_sorted.rows[6].index == 6,
+  "#{window_sorted.rows[1].index}..#{window_sorted.rows[6].index}"
+editor.set_sort finder, nil
+
+-- A filter and a sort are one order, not two that fight.
+editor.set_query finder, "ID > 3"
+editor.set_sort finder, by_name
+t.check "a sort applies to what the search left",
+  editor.visible(finder) == 3 and (editor.at finder, 1) == 4,
+  "#{editor.visible finder} rows, first #{tostring editor.at finder, 1}"
+editor.set_sort finder, nil
+editor.set_query finder, ""
+
+-- ═══════════════════════════════════════════════════════════════════════════
+
+t.section "Column widths"
+
+t.check "a column starts at the default width",
+  (editor.width_of finder, 1) == editor.DEFAULT_WIDTH
+
+editor.set_width finder, 1, 300
+t.check "and keeps what it is dragged to", (editor.width_of finder, 1) == 300
+
+editor.set_width finder, 1, 4
+t.check "dragged to nothing it stays grabbable",
+  (editor.width_of finder, 1) == 48, tostring editor.width_of finder, 1
+
+editor.set_width finder, 1, 99999
+t.check "and cannot be dragged past what fits",
+  (editor.width_of finder, 1) == 900, tostring editor.width_of finder, 1
+
+editor.set_width finder, 1, 200
+sized = editor.window finder, 0, 0, 2, 4
+
+t.check "the window carries each column's width", sized.columns[1].w == 200,
+  tostring sized.columns[1].w
+t.check "and where every column starts",
+  sized.offsets[1] == 0 and sized.offsets[2] == 200,
+  "#{tostring sized.offsets[1]}, #{tostring sized.offsets[2]}"
+t.check "and how wide the whole table is",
+  sized.total_width == 200 + editor.DEFAULT_WIDTH, tostring sized.total_width
+
+-- ═══════════════════════════════════════════════════════════════════════════
+
+t.section "Every language at once"
+
+slots = editor.populated_locales bags, bags\GetSchema!
+t.check "the languages a file carries are found",
+  (table.concat slots, ",") == "enUS,frFR", table.concat slots, ","
+
+spread = editor.session (library.open "ItemBagFamily"), "ItemBagFamily", "frFR",
+  BUILD, true
+localised = [column for column in *spread.columns when column.field == "Name_lang"]
+
+t.check "each one gets a column", #localised == 2, "#{#localised} columns"
+t.check "and reads the slot it names",
+  (editor.read spread, 1, localised[1]) == "Bag 1" and
+  (editor.read spread, 1, localised[2]) == "Sac 1",
+  "#{editor.read spread, 1, localised[1]} / #{editor.read spread, 1, localised[2]}"
+
+-- Two columns over one field, so a snapshot has to be the whole block or
+-- undoing one language would write over the other.
+t.check "and both cover the whole localised block",
+  localised[1].width == 68 and localised[2].width == 68
+
+t.check "a language the file has nothing in gets no column",
+  #[column for column in *spread.columns when column.extra == "deDE"] == 0
+
 t.load_native!
 
 -- The locale the tool edits comes from the workspace, so this is also what
@@ -510,7 +709,7 @@ app\on "ready", ->
     t.section "The table list"
 
     t.check "the tables are there on the first paint",
-      (window\eval "nui.get('dbc_tables').length") == 5,
+      (window\eval "nui.get('dbc_tables').length") == 6,
       tostring window\eval "nui.get('dbc_tables').length"
 
     -- The list is the page's own filter over the store, so the entries
@@ -521,7 +720,7 @@ app\on "ready", ->
 
     window\exec_js "nui.set('dbc_filter', '')"
     t.check "and clearing it brings the rest back",
-      (t.wait_until -> (window\eval "document.querySelectorAll('.dbc-table').length") == 5)
+      (t.wait_until -> (window\eval "document.querySelectorAll('.dbc-table').length") == 6)
 
     -- A file no definition describes is shown and cannot be clicked. Hiding
     -- it would mean somebody looking for it concluded it was not there.
@@ -557,10 +756,13 @@ app\on "ready", ->
     t.check "with the table list beside it",
       (window\eval "document.querySelector('.dbc-table').getClientRects().length") > 0
 
-    t.check "and the strip saying which locale is being edited",
+    -- Every language the file carries gets a column of its own by default, so
+    -- the strip says that rather than naming one slot. Silence either way is
+    -- how a row ends up holding two different names.
+    t.check "and the strip saying every language is on screen",
       (window\eval "[...document.querySelectorAll('span')]
         .some(el => el.getClientRects().length > 0 &&
-          el.textContent.trim() === 'Text: frFR')") == true
+          el.textContent.trim() === 'All languages')") == true
 
     -- The whole table sizes the scroller; only what is visible is drawn.
     t.check "the scroller is the size of the whole table",
@@ -569,11 +771,16 @@ app\on "ready", ->
       tostring window\eval "document.querySelector('.dbc-scroller')
         .firstElementChild.getBoundingClientRect().height"
 
+    headers = -> window\eval "[...document.querySelectorAll('.dbc-head')]
+      .map(el => el.innerText.replace(/\\s+/g, ' ').trim()).join('|')"
+
     t.check "the header names the columns and their kinds",
-      (window\eval "[...document.querySelectorAll('.dbc-head')]
-        .map(el => el.innerText.replace(/\\s+/g, ' ').trim()).join('|')")\match("Name_lang loc") != nil,
-      window\eval "[...document.querySelectorAll('.dbc-head')]
-        .map(el => el.innerText.replace(/\\s+/g, ' ').trim()).join('|')"
+      (headers!)\match("Name_lang enUS loc enUS") != nil, headers!
+
+    -- The second language, which is the point of showing them all: a file
+    -- translated into four and showing one looks like it lost three.
+    t.check "and one column per language the file carries",
+      (headers!)\match("Name_lang frFR loc frFR") != nil, headers!
 
     -- "New row" is offered where a new row can be told apart from its
     -- neighbours, and nowhere else.
@@ -659,6 +866,11 @@ app\on "ready", ->
       tostring window\eval "Math.round(document.querySelector('.dbc-scroller')
         .firstElementChild.getBoundingClientRect().height)"
 
+    -- Opening asks the page to put the grid back at the top, one frame
+    -- later. Scrolling before that has happened is a scroll the reset then
+    -- undoes - so wait for it, rather than racing it.
+    t.wait_until -> (window\eval "document.querySelector('.dbc-scroller').scrollTop") == 0
+
     -- The point of the whole arrangement: what is drawn is bounded by the
     -- window, not by the table. 2000 rows of 234 columns is 468,000 cells.
     drawn = window\eval "document.querySelectorAll('.dbc-cell').length"
@@ -696,14 +908,27 @@ app\on "ready", ->
       (window\eval "document.querySelector('.dbc-head').innerText")\match("%S") != nil,
       window\eval "document.querySelector('.dbc-head').innerText"
 
+    -- To the other long table, deliberately: this is the check that a reset
+    -- doing nothing would still pass if the table it moved to were short.
+    window\exec_js "document.querySelector('.dbc-scroller').scrollTop = 900 * 22"
+    t.wait_until -> (window\eval "nui.get('dbc_grid').row") > 0
+
+    window\exec_js "[...document.querySelectorAll('.dbc-table')]
+      .find(el => el.innerText.trim() === 'SpellIcon').click()"
+    t.wait_until -> (window\eval "nui.get('dbc_open')") == "SpellIcon"
+
+    t.check "opening another long table puts the scrollbar back at its top",
+      (t.wait_until -> (window\eval "document.querySelector('.dbc-scroller').scrollTop") == 0),
+      tostring window\eval "document.querySelector('.dbc-scroller').scrollTop"
+
+    t.check "and the grid is drawing that table's first rows",
+      (window\eval "nui.get('dbc_grid').row") == 0,
+      tostring window\eval "nui.get('dbc_grid').row"
+
     -- Back to the small table for what follows.
     window\exec_js "[...document.querySelectorAll('.dbc-table')]
       .find(el => el.innerText.trim() === 'ItemBagFamily').click()"
     t.wait_until -> (window\eval "nui.get('dbc_open')") == "ItemBagFamily"
-
-    t.check "switching back puts the scrollbar where the new table starts",
-      (t.wait_until -> (window\eval "document.querySelector('.dbc-scroller').scrollTop") == 0),
-      tostring window\eval "document.querySelector('.dbc-scroller').scrollTop"
 
     t.section "Deleting asks first"
 

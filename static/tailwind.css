@@ -286,6 +286,12 @@
     @apply bg-base-800 text-ink;
   }
 
+  /* Picked out but not opened, which only happens when opening takes two
+     clicks. Dimmer than an open table, because it is not one yet. */
+  .dbc-table.is-picked {
+    @apply bg-base-800 text-ink;
+  }
+
   .dbc-table.is-open {
     @apply bg-base-750 text-accent;
   }
@@ -314,8 +320,41 @@
   }
 
   .dbc-head {
-    @apply flex shrink-0 items-center border-b border-r border-line px-2
-           text-[11.5px] font-medium text-ink-dim;
+    @apply relative flex shrink-0 items-center border-b border-r border-line
+           px-2 text-[11.5px] font-medium text-ink-dim;
+  }
+
+  /* The name, which is also the sort control. A button rather than a click
+     handler on the cell, so the keyboard reaches it and the drag handle
+     beside it is not part of the same target. */
+  .dbc-sort {
+    @apply flex min-w-0 flex-1 items-center gap-1 text-left;
+  }
+
+  .dbc-sort:hover {
+    @apply text-ink;
+  }
+
+  .dbc-arrow {
+    @apply shrink-0 text-[8px] text-accent;
+  }
+
+  /* Four pixels of grab at the column's edge. Sits above the header's own
+     button, which is why the button does not extend under it. */
+  .dbc-grip {
+    @apply absolute inset-y-0 right-0 z-10 w-1 cursor-col-resize;
+  }
+
+  .dbc-grip:hover {
+    @apply bg-accent-dim;
+  }
+
+  /* Follows the cursor while a column is being dragged. The columns
+     themselves are left alone until the drag ends: redrawing six hundred
+     inputs on every mouse move would make the drag the slowest thing here. */
+  .dbc-guide {
+    @apply pointer-events-none fixed top-0 z-[60] w-px bg-accent;
+    height: 100vh;
   }
 
   /* A cell. An input rather than a div with an editor over it: focus,
@@ -360,11 +399,75 @@
            font-mono text-[11.5px] leading-relaxed text-ink-dim;
   }
 
-  /* One tool, on the home page's picker. One per registered tool, which is
-     what puts it here rather than beside the markup. */
+  /* Chromium keeps the content under the cursor still when what is above it
+     changes size - which is exactly what a virtualised grid does on every
+     redraw. Left on, opening a shorter table leaves the bar where the last
+     one had it and scrolling it back up fights the anchor. */
+  .dbc-scroller {
+    overflow-anchor: none;
+  }
+
+  /* The row number is the handle: clicking it picks the row, and the two
+     things that act on a whole row appear in it. */
+  .dbc-handle {
+    @apply cursor-pointer;
+  }
+
+  .dbc-handle:hover {
+    @apply bg-base-800 text-ink;
+  }
+
+  .dbc-rowacts {
+    @apply ml-auto flex items-center gap-0.5;
+  }
+
+  .dbc-rowacts button {
+    @apply grid h-4 w-4 place-items-center rounded text-ink-faint
+           transition-colors duration-75;
+  }
+
+  .dbc-rowacts button:hover {
+    @apply bg-base-700 text-accent;
+  }
+
+  /* Small, square-cornered controls that sit in a strip rather than in a
+     form: the clear button, the banner's two answers. */
+  .dbc-chip {
+    @apply shrink-0 rounded border border-line bg-base-800 px-1.5 py-0.5
+           text-[11.5px] text-ink-dim transition-colors duration-75;
+  }
+
+  .dbc-chip:hover {
+    @apply border-base-600 text-ink;
+  }
+
+  .dbc-picker {
+    @apply shrink-0 rounded border border-line bg-base-950 px-1 py-0.5
+           text-[11.5px] text-ink-dim;
+  }
+
+  /* Said once, above the grid, and answerable in place. A dialog would stop
+     the work to ask about something the user may not care about yet. */
+  .dbc-banner {
+    @apply flex shrink-0 items-center gap-2 border-b border-line bg-base-800
+           px-3 py-1.5 text-[12px] text-ink-dim;
+  }
+
+  /* The home page's picker. A grid rather than a list: the list read well at
+     two tools and would be a column of names at twenty, where the icon is
+     what the eye actually finds. */
+  .tool-grid {
+    @apply grid gap-2;
+    grid-template-columns: repeat(auto-fill, minmax(124px, 1fr));
+  }
+
+  /* One tool. Icon above, name below, and the star in the corner - which is
+     why this is a div with a button inside rather than one button: a star
+     inside a button that opens the tool could not be clicked on its own. */
   .tool-card {
-    @apply flex items-center gap-3 rounded border border-line bg-base-850
-           px-3 py-2.5 text-left transition-colors duration-75;
+    @apply relative flex flex-col items-center gap-2 rounded border
+           border-line bg-base-850 px-3 py-4 text-center transition-colors
+           duration-75;
   }
 
   .tool-card:hover {

@@ -21,6 +21,7 @@
 --       context: '<div class="...">...</div>'   -- optional
 --       panel: '<div>...</div>'                 -- optional
 --       view: '<div>...</div>'                  -- optional
+--       head: '<link rel="stylesheet" href="...">'  -- optional
 --       state: -> { dbc_open: "" }              -- optional
 --       mount: (window, state) -> ...           -- optional
 --       commands: { save: -> ..., undo: -> ... }
@@ -33,6 +34,10 @@
 -- An action's `shown` is a JavaScript expression against the store: the rail
 -- draws that button only while it holds. For the ones a tool can always offer,
 -- leave it out.
+--
+-- `head` is markup for the document head - the stylesheet and the script of a
+-- library the tool draws with. It goes in before the application's own
+-- stylesheet, which is what lets a rule here override a vendored one.
 --
 -- `view` is the tool's work area, shown whenever the active tab belongs to it.
 -- Like the rail and the strip it is rendered once, with the page: a tool's
@@ -89,6 +94,17 @@ M.find = (id) ->
 --- The id the interface should start on: the first registered tool.
 ---@return string
 M.first = -> #M.list > 0 and M.list[1].id or ""
+
+--- Every tool's own head markup, in registration order.
+--
+-- A tool that draws with a library brings that library's stylesheet and script
+-- with it, rather than the shell carrying a list of what its tools happen to
+-- use. Placed before the application's own stylesheet, so a rule of ours beats
+-- a vendored one of the same specificity.
+---@return string html
+M.head = ->
+  parts = [tool.head for tool in *M.list when tool.head]
+  table.concat parts, "\n"
 
 --- Every tool's store keys, merged.
 --

@@ -173,6 +173,18 @@ M.count = (set) -> #set.entries
 ---@return boolean
 M.any = (set) -> #set.entries > 0
 
+--- Every row the set has something to say about, as a set of keys.
+--
+-- What the "changed rows only" view pages over. A map rather than a list,
+-- because the caller walks the file and asks about each row in turn: a list
+-- would make that a scan inside a scan.
+---@param set table
+---@return table<string, boolean>
+M.keys = (set) ->
+  found = {}
+  found[entry.key] = true for entry in *set.entries
+  found
+
 --- What this set says about one row: "edit", "add", "delete" or nil.
 ---@param set table
 ---@param key string

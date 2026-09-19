@@ -222,6 +222,24 @@ M.session = (tbl, name, locale, build, mode) ->
     -- now, and a file of them for 246 tables would outlive its usefulness.
     widths: {}
 
+    -- Which columns are on screen and in what order, for the same reason and
+    -- in the same place. `order` stays nil while the record's own order is
+    -- what is shown, so the common case costs nothing; `hidden` is a map of
+    -- column index to true. Spell has 105 columns and nobody wants all of
+    -- them, which is the whole point of both.
+    hidden: {}
+    order: nil
+
+    -- Whether the grid pages over the changed rows alone, which is the view
+    -- you want in front of you before saving.
+    changed_only: false
+
+    -- Where paging begins, as an offset into the order. Non-zero only after
+    -- a jump to a particular row: the grid is fed forwards a page at a time,
+    -- so reaching row 40,000 means starting there rather than pulling the
+    -- 39,999 above it through the window first.
+    from: 0
+
     -- Where each row was in the file that was opened. A row that was not
     -- there has no such index, and the key is what names it instead. This is
     -- rewritten by every insertion and deletion, which is what lets a change
@@ -231,6 +249,12 @@ M.session = (tbl, name, locale, build, mode) ->
 
     stack: {}
     redo: {}
+
+    -- The group being recorded into, and how deep the calls to open one are
+    -- nested. A paste of two hundred cells is one thing the user did, so it
+    -- has to be one thing to take back.
+    group: nil
+    group_depth: 0
 
     -- The value each touched cell had before this session, so a cell put back
     -- to it can be dropped from the change set rather than written again.
@@ -438,9 +462,19 @@ M.reindex = (session) ->
   total = #session.origin
   session.stale = false
 
-  unless session.query or session.sort
+  unless session.query or session.sort or session.changed_only
     session.view = nil
     return
+
+  -- The rows the session has touched, by the key nothing can move. Taken once
+  -- rather than asked per row: the walk below is over every record in the
+  -- file, and a table of fifty thousand deserves the one map.
+  changed = session.changed_only and (changes.keys session.set) or nil
+
+  keep = (index) ->
+    return true unless changed
+    key = key_at session, index
+    key != nil and changed[key] == true
 
   kept = {}
 
@@ -466,9 +500,10 @@ M.reindex = (session) ->
     for index = 1, total
       at = index
       ok, matched = pcall session.query, get
-      table.insert kept, index if ok and matched
+      table.insert kept, index if ok and matched and (keep index)
   else
-    table.insert kept, index for index = 1, total
+    for index = 1, total
+      table.insert kept, index if keep index
 
   if session.sort
     column = session.columns[session.sort.column]
@@ -509,39 +544,50 @@ M.set_query = (session, text) ->
   M.reindex session
   true, nil
 
---- Sorts by a column, or stops sorting.
+--- Sorts by a column, in the direction asked for.
 --
--- Three states in one action, because a header has one place to click:
--- ascending, then descending, then back to the file's own order. A sort that
--- could only be turned off somewhere else is a sort people leave on.
+-- Over the whole table, which is why this is here rather than in the grid: the
+-- grid holds what has been scrolled past and nothing else, and sorting that is
+-- sorting an arbitrary prefix.
+--
+-- The direction is given rather than cycled. A header with one place to click
+-- has to cycle through ascending, descending and off, because there is nowhere
+-- to say which of the three is wanted - but the grid sends the direction with
+-- every page it asks for, and a cycle would turn the sort off on the second
+-- page of the same sorted table.
 ---@param session table
----@param index integer Column index, or nil to clear.
+---@param index integer|nil Column index, or nil to stop sorting.
+---@param descending boolean
 ---@return table|nil sort
-M.set_sort = (session, index) ->
+M.sort_by = (session, index, descending) ->
   if index == nil or not session.columns[index]
     session.sort = nil
-  elseif session.sort and session.sort.column == index
-    if session.sort.descending
-      session.sort = nil
-    else
-      session.sort = { column: index, descending: true }
   else
-    session.sort = { column: index, descending: false }
+    session.sort = { column: index, descending: descending and true or false }
 
   M.reindex session
   session.sort
 
---- The block of cells the grid is showing.
---
--- Bound to the visible window and nothing else: a table of forty thousand rows
--- is ordinary, every proxy is a live view rather than a copy, and the cost of
--- answering is the cost of what is on screen.
+--- Pages over the changed rows alone, or over all of them again.
 ---@param session table
----@param first_row integer 0-based offset of the first row wanted.
----@param first_col integer 0-based offset of the first column wanted.
----@param row_count integer
----@param col_count integer
----@return table window
+---@param wanted boolean
+M.set_changed_only = (session, wanted) ->
+  session.changed_only = wanted and true or false
+  session.from = 0
+  M.reindex session
+
+--- Where paging begins, as an offset into the order.
+--
+-- The grid is fed forwards from here, so this is how a row deep in a large
+-- table is reached at all: everything above the anchor is off the top until
+-- it is put back to zero.
+---@param session table
+---@param offset integer 0-based.
+M.set_from = (session, offset) ->
+  total = M.visible session
+  wanted = math.floor(tonumber(offset) or 0)
+  session.from = math.max 0, (math.min wanted, (math.max 0, total - 1))
+
 --- A column's width, as the user left it.
 ---@param session table
 ---@param index integer
@@ -559,101 +605,186 @@ M.set_width = (session, index, width) ->
   return unless session.columns[index]
   session.widths[index] = math.max 48, math.min 900, math.floor width
 
---- Where each column starts, cumulatively.
+--- The column indices in the order the grid shows them, hidden ones included.
 --
--- The grid drew every column at the same width, which made "which column is
--- under this scroll offset" a division. With widths of their own it becomes a
--- search, so the offsets are computed here, once, and the page is given them
--- rather than each cell's width alone.
+-- Whatever the user has arranged first, then anything the arrangement does not
+-- mention. A column added after the order was set - which is what changing the
+-- locale mode does - would otherwise disappear rather than appear at the end.
 ---@param session table
----@return number[] offsets 1-based; offsets[n] is where column n starts.
----@return number total
----@private
-column_offsets = (session) ->
-  offsets = {}
-  running = 0
+---@return integer[]
+M.layout = (session) ->
+  seen = {}
+  order = {}
+
+  for index in *(session.order or {})
+    continue unless session.columns[index]
+    continue if seen[index]
+    seen[index] = true
+    table.insert order, index
 
   for index = 1, #session.columns
-    offsets[index] = running
-    running += M.width_of session, index
+    continue if seen[index]
+    table.insert order, index
 
-  offsets[#session.columns + 1] = running
-  offsets, running
+  order
 
-M.window = (session, first_row, first_col, row_count, col_count) ->
-  total_rows = M.visible session
-  total_cols = #session.columns
-  offsets, total_width = column_offsets session
+--- Arranges the columns: which are on screen, and in what order.
+--
+-- Both at once, because both arrive from the same control and applying one
+-- without the other would draw the grid twice.
+---@param session table
+---@param order? integer[] Column indices. nil leaves the order alone.
+---@param hidden? table<integer, boolean> nil leaves visibility alone.
+M.set_layout = (session, order, hidden) ->
+  if type(order) == "table"
+    kept = {}
+    for index in *order
+      number = tonumber index
+      table.insert kept, number if number and session.columns[number]
+    session.order = #kept > 0 and kept or nil
 
-  first_row = math.max 0, (math.min first_row, (math.max 0, total_rows - 1))
-  first_col = math.max 0, (math.min first_col, (math.max 0, total_cols - 1))
+  if type(hidden) == "table"
+    marked = {}
+    for index, on_screen in pairs hidden
+      number = tonumber index
+      marked[number] = true if number and session.columns[number] and on_screen
+    session.hidden = marked
 
+--- The columns as the grid draws them: in order, each saying whether it shows.
+--
+-- Keyed by index rather than by label. Two localised columns of one field
+-- differ only by slot, and a label is for people.
+---@param session table
+---@return table[]
+M.grid_columns = (session) ->
   sorted = session.sort and session.sort.column or 0
-
   columns = {}
-  for offset = 1, col_count
-    at = first_col + offset
-    column = session.columns[at]
-    break unless column
+
+  for index in *M.layout session
+    column = session.columns[index]
     table.insert columns, {
+      key: "c#{index}"
+      :index
       label: column.label
       kind: column.kind
       extra: type(column.extra) == "string" and column.extra or nil
-      index: at
-      w: M.width_of session, at
-      sorted: at == sorted and (session.sort.descending and "desc" or "asc") or nil
+      w: M.width_of session, index
+      shown: not session.hidden[index]
+      sorted: index == sorted and (session.sort.descending and "desc" or "asc") or nil
 
-      -- The page needs this to know which cells can offer a list of rows to
-      -- pick from, and which are just numbers.
+      -- Which cells can offer a list of rows to pick from, and which are only
+      -- numbers.
       foreign: column.foreign
     }
 
+  json.array columns
+
+--- One row, in the shape the grid holds it.
+--
+-- `_i` is its 1-based index in the file, which is its identity: 22 of the 246
+-- tables in 3.3.5 keep no ID in their records. `_d` marks the cells this
+-- session has changed and `_e` the ones whose write was refused, both keyed by
+-- the same `c<index>` the values are.
+---@param session table
+---@param index integer
+---@param on_screen integer[] Column indices to read.
+---@return table
+---@private
+row_shape = (session, index, on_screen) ->
+  key = key_at session, index
+
+  -- Parenthesised: inside a table literal a comma ends the entry, so the
+  -- unparenthesised call would take `session` alone and leave `index` as a
+  -- positional element of the row.
+  row = { _i: index, _id: (M.id_at session, index) }
+  row._new = true if (changes.kind session.set, key) == "add"
+
+  dirty, refused = nil, nil
+
+  for at in *on_screen
+    column = session.columns[at]
+    field = "c#{at}"
+    failed = session.pending[cell_of key, column]
+
+    if failed
+      -- What was typed, not what is in the record: the edit is still the only
+      -- copy of what the user meant.
+      row[field] = failed.text
+      refused or= {}
+      refused[field] = failed.message
+    else
+      text, err = M.read session, index, column
+      row[field] = text
+
+      if err
+        refused or= {}
+        refused[field] = err
+      elseif (changes.field session.set, key, column) != nil
+        dirty or= {}
+        dirty[field] = true
+
+  row._d = dirty
+  row._e = refused
+  row
+
+--- Which columns the grid is reading: those on screen, in order.
+---@param session table
+---@return integer[]
+---@private
+shown_columns = (session) ->
+  [index for index in *M.layout session when not session.hidden[index]]
+
+--- One row by its index in the file, whether or not it is on a page.
+--
+-- What a write hands back, so the grid can show what Lua holds without asking
+-- for the table again - which would throw away every page scrolled past.
+---@param session table
+---@param index integer
+---@return table|nil
+M.row_at = (session, index) ->
+  return nil unless session.origin[index]
+  row_shape session, index, shown_columns session
+
+--- One page of rows, as the grid asks for them.
+--
+-- The grid library virtualises the document and not the data: it wants every
+-- row it is ever going to show, which on Spell is 49,839 by 105 - five million
+-- values that are neither serialisable nor holdable. So it is fed forwards a
+-- page at a time, and what it holds is what was actually scrolled past.
+---@param session table
+---@param page integer 1-based.
+---@param size integer Rows per page.
+---@return table { data, last_page, total, from }
+M.page = (session, page, size) ->
+  total = M.visible session
+  page = math.max 1, math.floor(tonumber(page) or 1)
+  size = math.max 1, math.floor(tonumber(size) or 100)
+
+  -- `from` is the second half of `import x from y`, so it cannot be a local:
+  -- the parse fails and the compiler blames the line rather than the name.
+  anchor = session.from or 0
+  begins = math.max 0, (math.min anchor, (math.max 0, total - 1))
+  remaining = math.max 0, total - begins
+  last = math.max 1, (math.ceil remaining / size)
+
+  -- Only the columns on screen. Hiding 95 of Spell's 105 is a twentieth of the
+  -- reads and a twentieth of the JSON, which is most of what this costs.
+  --
+  -- Not named `shown`: that is the module-level function that formats a value,
+  -- and MoonScript would assign to it rather than declare a second one.
+  on_screen = shown_columns session
+
   rows = {}
-  for offset = 1, row_count
-    index = M.at session, first_row + offset
+  for offset = 1, size
+    position = begins + (page - 1) * size + offset
+    break if position > total
+
+    index = M.at session, position
     break unless index
 
-    key = key_at session, index
-    cells = {}
+    table.insert rows, row_shape session, index, on_screen
 
-    for position = 1, #columns
-      column = session.columns[first_col + position]
-      cell = cell_of key, column
-      failed = session.pending[cell]
-
-      if failed
-        -- What was typed, not what is in the record: the edit is still the
-        -- only copy of what the user meant.
-        table.insert cells, { v: failed.text, e: failed.message, d: true }
-      else
-        text, err = M.read session, index, column
-        table.insert cells, {
-          v: text
-          e: err
-          d: (changes.field session.set, key, column) != nil or nil
-        }
-
-    table.insert rows, {
-      index: index
-      id: M.id_at session, index
-      new: (changes.kind session.set, key) == "add" or nil
-      cells: json.array cells
-    }
-
-  {
-    row: first_row
-    col: first_col
-    columns: json.array columns
-    rows: json.array rows
-    total_rows: total_rows
-    total_cols: total_cols
-
-    -- Where the drawn block starts, and how wide the whole table is. The page
-    -- can no longer work either out by multiplying, so it is told.
-    x: offsets[first_col + 1] or 0
-    offsets: json.array offsets
-    total_width: total_width
-  }
+  { data: json.array(rows), last_page: last, :total, from: begins }
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- Writing
@@ -731,6 +862,72 @@ restore = (session, row, column, bytes) ->
   -- to say so itself, or the table saves as though nothing had happened.
   session.table\GetFile!.dirty = true
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Grouping
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- A paste of two hundred cells is one thing the user did, and two hundred
+-- presses of Ctrl+Z to take it back would be unusable. So everything recorded
+-- between `begin_group` and `end_group` becomes a single entry on the stack.
+--
+-- A group holds what actually happened, not what was attempted. A cell the
+-- column would not take never reaches the record and never reaches the group:
+-- its text stays pending and its message stays on screen, exactly as a typed
+-- edit's does, and there is nothing about it to undo. So "half applied" is not
+-- a state a group can be left in - the entries it carries are precisely the
+-- writes that took.
+--
+-- Undoing one is all or nothing, which is the other half of the same promise:
+-- see `invert_group`.
+
+--- Puts an entry on the stack, or into the group if one is open.
+---@param session table
+---@param entry table
+---@private
+record = (session, entry) ->
+  if session.group
+    table.insert session.group.entries, entry
+    return
+
+  table.insert session.stack, entry
+  session.redo = {}
+
+--- Starts recording into a group.
+--
+-- Nested calls are counted rather than refused, so a caller that groups a
+-- paste cannot be broken by a caller that groups the operation around it.
+---@param session table
+M.begin_group = (session) ->
+  session.group_depth = (session.group_depth or 0) + 1
+  session.group = { kind: "group", entries: {} } if session.group_depth == 1
+
+--- Closes the group, leaving one step on the stack.
+---@param session table
+---@return integer members How many writes it holds.
+M.end_group = (session) ->
+  return 0 unless session.group_depth and session.group_depth > 0
+
+  session.group_depth -= 1
+  return 0 if session.group_depth > 0
+
+  group = session.group
+  session.group = nil
+  return 0 unless group
+
+  members = #group.entries
+
+  -- A group that took nothing is not a step. Every cell in the paste was
+  -- refused, and one Ctrl+Z should not be spent undoing nothing at all.
+  return 0 if members == 0
+
+  -- One entry is its own step: wrapping it changes nothing and costs a level
+  -- of indirection on every undo that walks past it afterwards.
+  table.insert session.stack, members == 1 and group.entries[1] or group
+  session.redo = {}
+  members
+
+-- ═══════════════════════════════════════════════════════════════════════════
+
 --- Writes one cell, and records enough to take it back.
 --
 -- A failed write keeps the edit: the text is remembered against the cell, the
@@ -773,15 +970,51 @@ M.set_cell = (session, index, column, text) ->
 
   session.pending[cell] = nil
 
-  table.insert session.stack, {
-    kind: "cell", :index, :column, :bytes, :key, :captured
-  }
-  session.redo = {}
+  record session, { kind: "cell", :index, :column, :bytes, :key, :captured }
+
+  -- The changed-rows view is a filter over the change set, so a write that
+  -- adds a row to it has changed which rows the grid pages over.
+  session.stale = true if session.changed_only
 
   changes.cell session.set, reference, column,
     (shown column.kind, value), session.originals[cell]
 
   true
+
+--- Writes a block of cells as one step.
+--
+-- What a paste is. Every cell goes through `set_cell` and nothing else does -
+-- a write that went round it would be a change nothing recorded - and each is
+-- pcalled, so one cell the column will not take does not stop the other
+-- hundred and ninety-nine. A refused cell keeps the text and the reason,
+-- exactly as a typed edit does.
+---@param session table
+---@param cells table[] { row, column (index), value }
+---@return integer written How many reached the record.
+---@return table[] refused { row, column, message }
+M.paste = (session, cells) ->
+  M.begin_group session
+
+  written = 0
+  refused = {}
+
+  for cell in *cells
+    continue unless type(cell) == "table"
+
+    index = tonumber cell.row
+    column = session.columns[tonumber(cell.column) or 0]
+    continue unless index and column
+
+    ok, took, err = pcall M.set_cell, session, index, column, tostring(cell.value or "")
+
+    if ok and took
+      written += 1
+    else
+      message = ok and tostring(err) or tostring(took)
+      table.insert refused, { row: index, column: cell.column, :message }
+
+  M.end_group session
+  written, refused
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- Rows
@@ -839,8 +1072,7 @@ M.add_row = (session) ->
   session.stale = true
   changes.added session.set, { :key, :id }, { kind: "create" }
 
-  table.insert session.stack, { kind: "add", :index, :key }
-  session.redo = {}
+  record session, { kind: "add", :index, :key }
 
   index
 
@@ -871,8 +1103,7 @@ M.duplicate_row = (session, index) ->
     source_key: source.key
   }
 
-  table.insert session.stack, { kind: "add", index: at, :key }
-  session.redo = {}
+  record session, { kind: "add", index: at, :key }
 
   at
 
@@ -892,16 +1123,52 @@ M.delete_row = (session, index) ->
 
   changes.removed session.set, reference
 
-  table.insert session.stack, {
+  record session, {
     kind: "delete", :index, :bytes, key: origin.key, :origin, :captured
   }
-  session.redo = {}
 
   true
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- Undo and redo
 -- ═══════════════════════════════════════════════════════════════════════════
+
+-- Declared before `invert_group`, which calls it. A local referenced above its
+-- own assignment compiles to a global, and the failure would be an undo that
+-- silently did nothing to a group.
+invert = nil
+
+--- Takes a whole group back, or leaves it exactly where it was.
+--
+-- LIFO within the group for the same reason the stack itself is LIFO: the
+-- entry applied last names indices the ones before it have not moved.
+--
+-- All or nothing. A member that refuses - a row proxy that will not resolve,
+-- a record the library has since shortened - puts the ones already turned back
+-- where they were and reports why. The alternative is a stack entry describing
+-- a change that is now only half in the file, and nothing afterwards could be
+-- trusted to name the right row.
+---@param session table
+---@param entry table
+---@return boolean ok, string|nil err
+---@private
+invert_group = (session, entry) ->
+  moved = {}
+
+  for position = #entry.entries, 1, -1
+    member = entry.entries[position]
+    ok, err = invert session, member
+
+    unless ok
+      for at = #moved, 1, -1
+        invert session, moved[at]
+      return false, err
+
+    table.insert moved, member
+
+  -- Reversed, so applying the group again replays it in the order it happened.
+  entry.entries = [entry.entries[at] for at = #entry.entries, 1, -1]
+  true
 
 --- Turns one entry inside out, leaving it ready to be turned back.
 --
@@ -914,6 +1181,13 @@ M.delete_row = (session, index) ->
 ---@return boolean ok, string|nil err
 ---@private
 invert = (session, entry) ->
+  -- Before the capture: a group has no key of its own, and each member takes
+  -- and puts back its own row's entry in the change set.
+  if entry.kind == "group"
+    ok, err = invert_group session, entry
+    session.stale = true if session.changed_only
+    return ok, err
+
   captured = changes.capture session.set, entry.key
 
   switch entry.kind
@@ -945,6 +1219,10 @@ invert = (session, entry) ->
 
   changes.reinstate session.set, entry.key, entry.captured
   entry.captured = captured
+
+  -- The changed-rows view is a filter over the change set, and this just
+  -- changed it.
+  session.stale = true if session.changed_only
   true
 
 --- Whether there is anything to take back.

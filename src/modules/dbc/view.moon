@@ -4,40 +4,38 @@
 -- tab are active: the strip under the category bar, the panel down the side,
 -- and the grid in the work area.
 --
--- **The grid binds the window, not the table.** DBC tables run to tens of
--- thousands of rows and two hundred columns, and the runtime rebuilds a
--- `data-for` wholesale whenever its list changes - so the list is what is on
--- screen. A box the size of the whole table holds the scrollbars, the header
--- and the visible block are placed inside it at the offset that matches the
--- scroll, and scrolling asks Lua for the block that is now in view.
+-- **The grid is Tabulator's; the data is not.** The library virtualises the
+-- document and not the data - it wants every row it will ever show, which on
+-- Spell is 49,839 by 105 - so it is fed forwards a page at a time through
+-- `dbc:page` and holds only what was actually scrolled past. Lua owns every
+-- write: a cell is a field in an FFI buffer reached through a proxy, and the
+-- only way a value gets into one is `editor.set_cell`.
 --
--- Every row is the same height, which is what makes the vertical arithmetic a
--- division. Columns are **not** the same width any more, so Lua sends where
--- each one starts and the page searches that list instead of dividing.
+-- The host is a flex child with a real size rather than a box positioned
+-- inside one. A library that measures its container and is handed a box of no
+-- height lays the whole thing out into a point: every count correct, the
+-- screen empty. That is what happened to the relations graph, and it is the
+-- same mistake here.
 ---@module modules.dbc.view
 
 etlua = require "etlua"
 
 M = {}
 
---- The grid's geometry, in pixels.
+--- The grid's geometry, in pixels, and how much of it is asked for at a time.
 --
--- Shared between the markup and the module that fills it: the page works out
--- which block is in view from these, and Lua answers with exactly that block.
--- Two copies of these numbers would be two copies that drift.
+-- Shared between the markup and the module that fills it. Two copies of these
+-- numbers would be two copies that drift.
 ---@type table
 M.METRICS = {
   row: 22        -- a row, dense enough to read a screenful at once
-  head: 26       -- the frozen header
-  index: 72      -- the frozen row-index column
+  head: 26       -- the header
+  index: 74      -- the frozen row-index column
 
-  -- How much is fetched around what is visible. The window is asked for again
-  -- only when the first visible row or column leaves this margin, so an
-  -- ordinary scroll redraws from what is already here.
-  rows: 64
-  columns: 16
-  margin_rows: 6
-  margin_columns: 1
+  -- Rows per request. Large enough that an ordinary scroll does not ask for
+  -- another page every second, small enough that opening a table is one read
+  -- of a few hundred records rather than of fifty thousand.
+  page: 200
 }
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -66,6 +64,62 @@ CONTEXT = [==[
         data-show="dbc_open !== '' && !dbc_info.has_id"
         title="This table keeps no ID in its records, so a row is named by its position."
       >No ID column</span>
+
+  <!-- Paging starts partway down, which is how a row deep in a large table is
+       reached at all: the grid is fed forwards, so getting to row 40,000 means
+       beginning there. Said out loud, with the way back beside it. -->
+  <button type="button" class="dbc-chip" data-show="dbc_info.from > 0"
+          data-on-click="neutrino.invoke('dbc:top')"
+          data-text="'From row ' + (dbc_info.from + 1) + ' — back to the top'"></button>
+
+  <!-- What you want in front of you before saving. -->
+  <button type="button" class="dbc-chip" data-show="dbc_open !== ''"
+          data-class-is-on="dbc_changed_only"
+          data-on-click="neutrino.invoke('dbc:changed-only')"
+          title="Show only the rows this session has changed"
+    >Changed only</button>
+
+  <!-- Closes the column list on the next click anywhere else. -->
+  <div class="fixed inset-0 z-30" data-show="dbc_cols_open"
+       data-on-click="dbc_cols_open = false"></div>
+
+  <!-- Spell has 105 columns and nobody wants all of them. Dragging a header
+       reorders; this is where one is taken off the screen and put back. -->
+  <div class="relative" data-show="dbc_open !== ''">
+    <button type="button" class="dbc-chip"
+            data-class-is-on="dbc_columns.some(c => !c.shown)"
+            data-on-click="dbc_cols_open = !dbc_cols_open"
+            data-text="'Columns ' + dbc_columns.filter(c => c.shown).length +
+              '/' + dbc_columns.length"></button>
+
+    <div class="surface-float dbc-columns" data-show="dbc_cols_open">
+      <div class="flex shrink-0 items-center gap-1 border-b border-line px-2 py-1.5">
+        <span class="text-[11px] text-ink-faint">Shown in the grid</span>
+        <button type="button" class="dbc-chip ml-auto"
+                data-on-click="neutrino.invoke('dbc:columns', { every: true })"
+          >All</button>
+        <button type="button" class="dbc-chip"
+                data-on-click="neutrino.invoke('dbc:columns', { every: false })"
+          >None</button>
+      </div>
+
+      <div class="min-h-0 flex-1 overflow-y-auto py-1" data-for="column in dbc_columns">
+        <template>
+          <!-- A button rather than a checkbox: an input's checked state is the
+               browser's once it has been clicked, and an attribute written
+               from the store no longer moves it. -->
+          <button type="button" class="dbc-column" data-class-is-on="column.shown"
+                  data-on-click="neutrino.invoke('dbc:columns', {
+                    column: column.index, shown: !column.shown })">
+            <span class="dbc-column-mark" data-text="column.shown ? '✓' : ''"></span>
+            <span class="truncate" data-text="column.label"></span>
+            <span class="ml-auto pl-2 text-[10.5px] text-ink-faint"
+                  data-text="column.kind"></span>
+          </button>
+        </template>
+      </div>
+    </div>
+  </div>
 
   <!-- The search. The box is the whole query: a picker that set a second,
        hidden filter beside it would mean two places to look when the grid
@@ -174,114 +228,24 @@ GRID = [==[
         >Keep <span data-text="dbc_info.locale"></span></button>
     </div>
 
-    <!-- The scroller. Its content is the size of the whole table, so the bars
-         are the table's; what is drawn inside is the visible block. -->
-    <div class="dbc-scroller min-h-0 flex-1 overflow-auto"
-         data-on-scroll="
-           const first = Math.max(0, Math.floor($el.scrollTop / <%= metrics.row %>) - <%= metrics.margin_rows %>);
-           const offs = dbc_grid.offsets;
-           let lo = 0, hi = offs.length - 1;
-           while (lo < hi) {
-             const mid = (lo + hi + 1) >> 1;
-             if (offs[mid] <= $el.scrollLeft) lo = mid; else hi = mid - 1;
-           }
-           const left = Math.max(0, lo - <%= metrics.margin_columns %>);
-           if (first !== dbc_grid.row || left !== dbc_grid.col)
-             neutrino.invoke('dbc:window', { row: first, col: left })">
+    <div class="relative flex min-h-0 flex-1 flex-col">
+      <!-- Where Tabulator draws. The host is the flex child itself and
+           nothing is positioned inside it: a library that measures its
+           container and finds no height lays the whole grid out into a point,
+           which is every count correct and an empty screen. -->
+      <div class="dbc-grid min-h-0 flex-1"></div>
 
-      <div class="relative"
-           data-attr-style="'height:' + (dbc_grid.total_rows * <%= metrics.row %> + <%= metrics.head %>)
-             + 'px;width:' + (dbc_grid.total_width + <%= metrics.index %>) + 'px'">
-
-        <!-- Header. Frozen at the top by sticking to the scroller, so it
-             scrolls sideways with the columns it names. -->
-        <div class="sticky top-0 z-20 flex bg-base-850"
-             style="height: <%= metrics.head %>px">
-          <div class="dbc-index sticky left-0 z-30 border-b border-line">#</div>
-          <div class="flex" data-for="column in dbc_grid.columns"
-               data-attr-style="'margin-left:' + dbc_grid.x + 'px'">
-            <template>
-              <div class="dbc-head" data-attr-style="'width:' + column.w + 'px'">
-                <button type="button" class="dbc-sort"
-                        data-attr-title="'Sort by ' + column.label"
-                        data-on-click="neutrino.invoke('dbc:sort', column.index)">
-                  <span class="truncate" data-text="column.label"></span>
-                  <span class="dbc-arrow" data-show="column.sorted"
-                        data-text="column.sorted === 'desc' ? '▼' : '▲'"></span>
-                </button>
-
-                <span class="pl-1.5 text-[10.5px] text-ink-faint"
-                      data-text="column.extra ? column.kind + ' ' + column.extra : column.kind"></span>
-
-                <!-- The drag handle. Its own element rather than the cell's
-                     edge, so clicking a header still sorts. -->
-                <span class="dbc-grip"
-                      data-on-mousedown="window.dbcResize($event, column.index, column.w)"></span>
-              </div>
-            </template>
-          </div>
-        </div>
-
-        <!-- The visible block, put where the rows it holds belong. -->
-        <div class="absolute left-0" data-for="row in dbc_grid.rows"
-             data-attr-style="'top:' + (<%= metrics.head %> + dbc_grid.row * <%= metrics.row %>) + 'px'">
-          <template>
-            <div class="flex" style="height: <%= metrics.row %>px">
-              <!-- The row's own number, and where a row is acted on. Picking a
-                   row by clicking a cell meant the act of reading one selected
-                   it; here the number is the handle and the cells are text. -->
-              <div class="dbc-index dbc-handle sticky left-0 z-10"
-                   data-class-is-new="row.new"
-                   data-class-is-current="row.index === dbc_row"
-                   data-on-click="dbc_row = row.index">
-                <span data-text="row.index"></span>
-                <span class="ml-auto text-[10.5px] text-ink-faint"
-                      data-show="dbc_info.has_id && dbc_row !== row.index"
-                      data-text="row.id"></span>
-
-                <span class="dbc-rowacts" data-show="dbc_row === row.index">
-                  <button type="button" title="Duplicate this row"
-                          data-on-click="dbc_row = row.index; neutrino.invoke('dbc:duplicate')"
-                    ><%- icon("copy", 12) %></button>
-                  <button type="button" title="Delete this row"
-                          data-on-click="dbc_row = row.index; neutrino.invoke('dbc:delete')"
-                    ><%- icon("trash", 12) %></button>
-                </span>
-              </div>
-
-              <div class="flex" data-for="cell, at in row.cells"
-                   data-attr-style="'margin-left:' + dbc_grid.x + 'px'">
-                <template>
-                  <!-- One input per visible cell. A cell that is a field means
-                       focus, selection and typing come from the browser rather
-                       than from an editor overlay of our own.
-
-                       The commit is on change, which is blur or Enter, and
-                       Enter blurs first so both take the same path. -->
-                  <input type="text" spellcheck="false" class="dbc-cell"
-                         data-attr-style="'width:' + dbc_grid.columns[at].w + 'px'"
-                         data-attr-value="cell.v"
-                         data-attr-title="cell.e || ''"
-                         data-class-is-dirty="cell.d"
-                         data-class-is-bad="cell.e"
-                         data-class-is-link="dbc_grid.columns[at].foreign"
-                         data-on-focus="dbc_row = row.index;
-                           if (dbc_resolver && dbc_grid.columns[at].foreign)
-                             window.dbcPick($el, row.index,
-                               dbc_grid.col + at + 1,
-                               dbc_grid.columns[at].foreign)"
-                         data-on-keydown="
-                           if ($event.key === 'Enter') $el.blur();
-                           else if ($event.key === 'Escape') { $el.value = cell.v; $el.blur() }"
-                         data-on-change="neutrino.invoke('dbc:set', {
-                           row: row.index,
-                           column: dbc_grid.col + at + 1,
-                           value: $el.value })">
-                </template>
-              </div>
-            </div>
-          </template>
-        </div>
+      <!-- Nothing to show. Over the grid rather than instead of it: taking the
+           host out of the layout would leave the library measuring a box that
+           is not there when the rows come back. The header stays visible,
+           because it is still the answer to "which columns". -->
+      <div class="dbc-grid-empty" data-show="dbc_info.shown === 0">
+        <span data-show="dbc_changed_only">Nothing in this table has been
+          changed yet. Edit a cell, or turn "Changed only" off.</span>
+        <span data-show="!dbc_changed_only && dbc_query !== ''">No row matches
+          that filter.</span>
+        <span data-show="!dbc_changed_only && dbc_query === ''">This table has
+          no rows.</span>
       </div>
     </div>
 

@@ -63,58 +63,30 @@ tab_id = (name) -> "dbc:#{name}"
 ---@param window BrowserWindow
 ---@param state State
 M.mount = (window, state) ->
-  -- Where the grid is looking, in rows and columns from the top left. Held
-  -- here as well as in the store because the page asks for a window it has
-  -- already decided on, and answering the same question twice is a redraw.
-  at_row, at_col = 0, 0
-
   say = (message) -> state\set "dbc_message", message or ""
 
-  --- Asks the page to put the grid back at the top.
+  --- Tells the page to read the table again from the first page.
   --
-  -- Through the store rather than by reaching in and setting scrollTop, which
-  -- races the redraw in both directions: done too early the incoming table's
-  -- layout undoes it, done too late it throws away a scroll made in between.
-  -- The counter says *that* the view should go home and the page does it once
-  -- it has drawn what it is going home to.
-  scroll_to = (top) ->
-    state\set "dbc_top", (tonumber(state\get "dbc_top") or 0) + 1
+  -- A counter rather than the data itself: what changed is which rows exist
+  -- and in what order, and the grid asks for them a page at a time. Bumping
+  -- this is the one way the data source is restarted, so there is one place to
+  -- look when the grid is showing the wrong thing.
+  reload = ->
+    state\set "dbc_reload", (tonumber(state\get "dbc_reload") or 0) + 1
 
   --- Installs what the page needs that markup cannot express.
   --
-  -- Written into the page once rather than inlined in the header: the column
-  -- drag is twenty lines of pointer handling, and a copy per column would be
-  -- a copy per column to keep right.
-  --
-  -- The columns are left alone while the pointer moves and a single guide line
-  -- follows it instead. Redrawing six hundred inputs on every mousemove would
-  -- make dragging the slowest thing in the grid.
+  -- Two libraries, laid out and driven from here: the relations graph and the
+  -- grid. Both are the same kind of thing - a container, a configuration and a
+  -- handful of callbacks - and neither can be expressed as markup with data-
+  -- attributes on it.
   install_page_helpers = ->
+    -- The numbers the page and Lua both work from, handed over rather than
+    -- written twice. A long string does not interpolate, so this goes first.
+    window\exec_js "window.DBC = { page: #{view.METRICS.page},
+      row: #{view.METRICS.row}, index: #{view.METRICS.index} }"
+
     window\exec_js [==[
-      // Puts the grid back at the top when Lua says the view has moved on to
-      // something else - another table, a search, a sort. Driven by a counter
-      // rather than by a position, because "should it be at the top" is an
-      // intention and scrollTop is a measurement that layout also changes.
-      let seenTop = null
-      nui.effect(() => {
-        const token = nui.get('dbc_top')
-        if (seenTop === token) return
-        const first = seenTop === null
-        seenTop = token
-        if (first) return
-
-        // Decided now, acted on next frame. A view already at the top has
-        // nothing to put back, and scheduling a reset anyway would undo a
-        // scroll made in the frame between the two.
-        const scroller = document.querySelector('.dbc-scroller')
-        if (!scroller || scroller.scrollTop === 0) return
-
-        requestAnimationFrame(() => {
-          scroller.scrollTop = 0
-          scroller.scrollLeft = 0
-        })
-      })
-
       // ── The relations graph ──────────────────────────────────────────────
       //
       // Cytoscape, loaded the first time the panel is opened rather than with
@@ -385,48 +357,398 @@ M.mount = (window, state) ->
         pop.style.top = (below < height ? Math.max(8, box.top - height) : box.bottom) + 'px'
       }
 
-      window.dbcResize = (event, column, width) => {
+      // ── The grid ─────────────────────────────────────────────────────────
+      //
+      // Tabulator draws it. It does not own the data: a cell is a field in an
+      // FFI buffer that only Lua can read or write, so the rows arrive a page
+      // at a time over IPC and every edit goes back the same way.
+      //
+      // Spell is 49,839 rows by 105 columns. Handing the library all of it is
+      // five million values, which is neither serialisable nor holdable, so
+      // progressive loading is not a refinement here - it is the only shape
+      // that works at all.
+
+      let grid = null
+      let building = 0
+      let seenShape = null
+      let seenReload = null
+
+      // A cell's text, and what Lua said about it. Returned as a text node
+      // rather than as a string: a formatter's string return is assigned
+      // through innerHTML, and a DBC holds whatever bytes somebody put in it.
+      const dbcFormat = (cell) => {
+        const data = cell.getRow().getData()
+        const field = cell.getField()
+        const el = cell.getElement()
+        const refused = data._e ? data._e[field] : null
+
+        el.classList.toggle('is-bad', !!refused)
+        el.classList.toggle('is-dirty', !refused && !!(data._d && data._d[field]))
+        if (refused) el.setAttribute('title', refused)
+        else el.removeAttribute('title')
+
+        const value = cell.getValue()
+        return document.createTextNode(
+          value === undefined || value === null ? '' : String(value))
+      }
+
+      // The frozen first column: which row this is in the file - which is its
+      // identity, and all the 22 tables without an ID have - and its ID beside
+      // it when the two differ.
+      const dbcRowHead = (cell) => {
+        const data = cell.getRow().getData()
+        cell.getElement().classList.toggle('is-new', !!data._new)
+
+        const box = document.createElement('span')
+        box.className = 'dbc-rowhead'
+
+        const number = document.createElement('span')
+        number.textContent = String(data._i)
+        box.appendChild(number)
+
+        if (data._id !== undefined && data._id !== null && data._id !== data._i) {
+          const id = document.createElement('span')
+          id.className = 'dbc-rowid'
+          id.textContent = String(data._id)
+          box.appendChild(id)
+        }
+
+        return box
+      }
+
+      // Not a URL. The loader is asked for a page and answered by Lua, which
+      // is the only thing that can read a record, so `ajaxURL` is a marker the
+      // loader checks for rather than something anybody fetches.
+      const dbcRequest = (url, config, params) => neutrino.invoke('dbc:page', {
+        page: params.page || 1,
+        size: params.size || window.DBC.page,
+        sorters: params.sort || [],
+      })
+
+      // A paste is a block of cells, and every one of them is a write only Lua
+      // can make. This works out which cells the range means and hands the
+      // list over; nothing here writes a row. One message, and one group on
+      // the undo stack: two hundred presses of Ctrl+Z to take back one paste
+      // would be unusable.
+      const dbcPasteAction = function (parsed) {
+        const ranges = this.table.modules.selectRange
+        const active = ranges && ranges.activeRange
+        if (!active || !parsed.length) return []
+
+        const bounds = active.getBounds()
+        if (!bounds.start) return []
+
+        // One cell selected means "paste what is on the clipboard, at its own
+        // size"; a block means "fill this block, repeating if it is larger".
+        const single = bounds.start === bounds.end
+        const rows = this.table.rowManager.activeRows.slice()
+        const at = rows.indexOf(bounds.start.row)
+        if (at < 0) return []
+
+        const height = single ? parsed.length : rows.indexOf(bounds.end.row) - at + 1
+        const target = rows.slice(at, at + height)
+
+        const cells = []
+        target.forEach((row, offset) => {
+          const values = parsed[offset % parsed.length]
+          for (const field of Object.keys(values)) {
+            if (field.charAt(0) !== 'c') continue
+            cells.push({
+              row: row.getData()._i,
+              column: Number(field.slice(1)),
+              value: values[field],
+            })
+          }
+        })
+
+        neutrino.invoke('dbc:paste', { cells: cells })
+          .then((answer) => dbcApply(answer && answer.rows))
+
+        // Nothing was written here, so nothing is reported as having changed.
+        return []
+      }
+
+      // Puts what Lua now holds into the rows the grid is showing.
+      //
+      // Redrawn as well as updated. A cell whose text did not change - a
+      // refused write keeps what was typed, and a successful one was already
+      // showing it - is not redrawn by an update alone, and the mark saying
+      // "changed" or "refused" lives on the element rather than in the value.
+      const dbcApply = async (rows) => {
+        if (!grid || !rows || !rows.length) return
+        await grid.updateData(rows)
+
+        for (const data of rows) {
+          const row = grid.getRow(data._i)
+          if (row) row.reformat()
+        }
+      }
+
+      const dbcColumns = (columns) => {
+        const defs = []
+
+        for (const column of columns) {
+          if (!column.shown) continue
+          defs.push({
+            title: column.label,
+            field: column.key,
+            width: column.w,
+            headerSortStartingDir: 'asc',
+            headerTooltip: column.extra
+              ? column.kind + ' ' + column.extra : column.kind,
+            cssClass: column.foreign ? 'dbc-value is-link' : 'dbc-value',
+            formatter: dbcFormat,
+            editor: 'input',
+          })
+        }
+
+        return defs
+      }
+
+      // Which column a field names. The key is the column's index in the
+      // session, because two localised columns of one field differ only by
+      // slot and a label is for people.
+      const dbcIndex = (field) => Number(String(field).slice(1))
+
+      const buildGrid = async (columns) => {
+        const mine = ++building
+        const host = document.querySelector('.dbc-grid')
+        if (!host) return
+
+        // The same trap as the relations graph, and the same helper: the work
+        // area is hidden until the store update that opened the table has been
+        // drawn, and a grid measured against a box of no height lays itself
+        // out into a point. Every count right, and nothing on screen.
+        if (!await withSize(host)) return
+        if (mine !== building) return
+
+        if (grid) { grid.destroy(); grid = null }
+
+        const defs = dbcColumns(columns)
+        if (defs.length === 0) return
+
+        grid = new Tabulator(host, {
+          height: '100%',
+          index: '_i',
+          layout: 'fitDataFill',
+          columns: defs,
+          placeholder: ' ',
+
+          // Columns as well as rows. Spell is 170 cells to a record, and a
+          // row drawn in full is 170 elements for the dozen that are in
+          // view - which is the same mistake as holding every row.
+          renderHorizontal: 'virtual',
+
+          // The row's place in the file, frozen down the left. A row header
+          // rather than an ordinary column, so a range never covers it and a
+          // click on it takes the whole row.
+          rowHeader: {
+            title: '#',
+            field: '_i',
+            width: window.DBC.index,
+            headerSort: false,
+            resizable: false,
+            editor: false,
+            frozen: true,
+            cssClass: 'dbc-rownum',
+            formatter: dbcRowHead,
+          },
+
+          // Fed forwards a page at a time, so what the grid holds is what was
+          // actually scrolled past rather than what the table contains.
+          ajaxURL: 'dbc:page',
+          ajaxRequestFunc: dbcRequest,
+          progressiveLoad: 'scroll',
+          progressiveLoadDelay: 0,
+
+          // How close to the bottom a scroll has to get before the next page
+          // is asked for. Named rather than left at two screenfuls, which on a
+          // tall window pulls several pages in before anything has been
+          // scrolled at all.
+          progressiveLoadScrollMargin: 300,
+          paginationSize: window.DBC.page,
+
+          // Lua sorts, over the whole table. Tabulator can only sort what it
+          // holds, which is whatever has been scrolled past so far.
+          sortMode: 'remote',
+
+          // Range selection, the clipboard and the keyboard that comes with
+          // them - which is the whole reason this is a library and not a
+          // hand-written grid.
+          selectableRange: 1,
+          selectableRangeColumns: true,
+          selectableRangeRows: true,
+
+          // Delete would write empty values straight into the row data. Lua
+          // owns every write, so it stays off.
+          selectableRangeClearCells: false,
+
+          editTriggerEvent: 'dblclick',
+          movableColumns: true,
+
+          clipboard: true,
+          clipboardCopyStyled: false,
+          clipboardCopyRowRange: 'range',
+          clipboardPasteParser: 'range',
+          clipboardPasteAction: dbcPasteAction,
+        })
+
+        grid.on('cellEdited', async (cell) => {
+          const answer = await neutrino.invoke('dbc:set', {
+            row: cell.getRow().getData()._i,
+            column: dbcIndex(cell.getField()),
+            value: cell.getValue(),
+          })
+
+          // What Lua actually holds now, which is not what was typed when the
+          // column refused it. The text is kept either way.
+          if (answer && answer.row) dbcApply([answer.row])
+        })
+
+        // The list of rows a foreign key could point at, under the cell being
+        // edited - when the setting asks for it.
+        grid.on('cellEditing', (cell) => {
+          const column = (nui.get('dbc_columns') || [])
+            .find((c) => c.key === cell.getField())
+          if (!nui.get('dbc_resolver') || !column || !column.foreign) return
+          window.dbcPick(cell.getElement(), cell.getRow().getData()._i,
+            column.index, column.foreign)
+        })
+
+        grid.on('columnResized', (column) => {
+          const field = column.getField()
+          if (!field || field === '_i') return
+          neutrino.invoke('dbc:resize', {
+            column: dbcIndex(field), width: Math.round(column.getWidth()),
+          })
+        })
+
+        grid.on('columnMoved', (column, columns) => {
+          const order = columns.map((c) => c.getField())
+            .filter((f) => f && f !== '_i').map(dbcIndex)
+          neutrino.invoke('dbc:columns', { order: order })
+        })
+
+        // Which row the rail's Duplicate and Delete act on. The range is where
+        // the user is, so it is what answers.
+        grid.on('rangeChanged', (range) => {
+          const rows = range.getRows()
+          if (rows.length > 0) nui.set('dbc_row', rows[0].getData()._i)
+        })
+      }
+
+      // Rebuilt when the columns change - another table, another language, a
+      // column taken off the screen - and told to read again from the first
+      // page when Lua says the rows or their order have. Two different things:
+      // one throws the grid away, the other asks it for the data again.
+      nui.effect(() => {
+        const columns = nui.get('dbc_columns') || []
+        const token = nui.get('dbc_reload')
+        const shape = JSON.stringify(columns.filter((c) => c.shown))
+
+        if (shape !== seenShape) {
+          seenShape = shape
+          seenReload = token
+          // After the frame that shows the work area, for the same reason the
+          // graph waits: a container with no size yet is a grid nobody sees.
+          requestAnimationFrame(() => buildGrid(columns))
+          return
+        }
+
+        if (token === seenReload) return
+        seenReload = token
+        if (grid) grid.setData()
+      })
+
+      // Enter and Tab commit and move, which a table editor lives on.
+      //
+      // Tabulator's own navigation is turned off while range selection is on,
+      // and the range module's answer to Tab mid-edit is to throw the edit
+      // away - which is the opposite of committing it. So the commit is made
+      // here, through the editor's own change handler, and the range is moved
+      // afterwards. Capture, so this runs before the editor sees the key.
+      document.addEventListener('keydown', (event) => {
+        const editing = grid && grid.modules.edit && grid.modules.edit.currentCell
+        if (!editing) return
+
+        let direction = null
+        if (event.key === 'Enter') direction = event.shiftKey ? 'up' : 'down'
+        else if (event.key === 'Tab') direction = event.shiftKey ? 'left' : 'right'
+        if (!direction) return
+
         event.preventDefault()
         event.stopPropagation()
 
-        const startX = event.clientX
-        const guide = document.createElement('div')
-        guide.className = 'dbc-guide'
-        guide.style.left = startX + 'px'
-        document.body.appendChild(guide)
-
-        let next = width
-
-        const move = (moved) => {
-          next = Math.max(48, Math.min(900, width + (moved.clientX - startX)))
-          guide.style.left = (startX + (next - width)) + 'px'
+        // `change` rather than a blur: an input that never took focus has no
+        // blur to give, and the editor listens for both.
+        const input = editing.getElement().querySelector('input')
+        if (input) {
+          input.dispatchEvent(new Event('change'))
+          if (grid.modules.edit.currentCell) input.blur()
         }
 
-        const done = () => {
-          document.removeEventListener('pointermove', move)
-          document.removeEventListener('pointerup', done)
-          guide.remove()
-          neutrino.invoke('dbc:resize', { column: column, width: next })
+        // Next tick: the commit clears the cell being edited, and the range
+        // refuses to move while one is set.
+        setTimeout(() => {
+          const ranges = grid && grid.modules.selectRange
+          if (ranges) ranges.navigate(false, false, direction)
+        }, 0)
+      }, true)
+
+      // ── What the suite can see ───────────────────────────────────────────
+
+      // The table itself, so a suite can drive the real thing rather than a
+      // second set of hooks that answer for it. Everything else here measures
+      // something that cannot be got at from outside.
+      window.__grid = () => grid
+
+      // Cells on screen, with a size, inside the host. Everything short of
+      // this was true of a grid laid out into a box of no height: the counts
+      // right, the elements there, and nothing visible.
+      //
+      // The intersection with the host, not merely an overlap with it. A
+      // container collapsed to nothing still has cells hanging out of it that
+      // an overlap test counts - which is how this measured a full grid while
+      // the screen was blank.
+      window.__gridDrawn = () => {
+        const host = document.querySelector('.dbc-grid')
+        if (!host || !grid) return 0
+
+        const box = host.getBoundingClientRect()
+        let seen = 0
+
+        for (const cell of host.querySelectorAll('.tabulator-cell')) {
+          const rect = cell.getBoundingClientRect()
+          const height = Math.min(rect.bottom, box.bottom) - Math.max(rect.top, box.top)
+          const width = Math.min(rect.right, box.right) - Math.max(rect.left, box.left)
+          if (height >= 2 && width >= 2) seen += 1
         }
 
-        document.addEventListener('pointermove', move)
-        document.addEventListener('pointerup', done)
+        return seen
       }
+
+      window.__gridDebug = () => {
+        const host = document.querySelector('.dbc-grid')
+        if (!host) return 'no host'
+        return host.clientWidth + 'x' + host.clientHeight +
+          ' held=' + (grid ? grid.getDataCount() : -1) +
+          ' cells=' + host.querySelectorAll('.tabulator-cell').length +
+          ' drawn=' + window.__gridDrawn()
+      }
+
     ]==]
 
-  --- Pushes the block the grid is showing.
-  push_window = ->
-    unless active
-      state\set "dbc_grid", {
-        row: 0, col: 0, total_rows: 0, total_cols: 0, total_width: 0, x: 0
-        columns: json.array {}, rows: json.array {}, offsets: json.array { 0 }
-      }
-      return
+  --- Pushes the columns the grid draws, in the order and the visibility the
+  --- user has left them.
+  --
+  -- The grid is rebuilt when this changes and only then: a column appearing,
+  -- disappearing or moving is a different table as far as the library is
+  -- concerned, and the rows are asked for again afterwards.
+  push_columns = ->
+    state\set "dbc_columns", active and editor.grid_columns(active) or json.array {}
+    state\set "dbc_changed_only", active and active.changed_only or false
 
-    state\set "dbc_grid", editor.window active, at_row, at_col,
-      view.METRICS.rows, view.METRICS.columns
-
-  --- Pushes everything about the open table that is not the grid itself.
+  --- Pushes everything about the open table that is not the rows themselves.
   push_info = ->
     state\set "dbc_open", active and active.name or ""
 
@@ -443,6 +765,11 @@ M.mount = (window, state) ->
       spread: active and active.spread or false
       format: active and active.format or ""
       changes: active and changes.count(active.set) or 0
+
+      -- Where paging begins. Non-zero only after a jump to a row, and said on
+      -- the strip because everything above it is off the top until it is put
+      -- back to zero.
+      from: active and active.from or 0
     }
 
     -- Read on every refresh rather than once: the setting can change while
@@ -463,9 +790,15 @@ M.mount = (window, state) ->
       state\set "dbc_preview", editor.script active
 
   --- Everything the page knows about the table, after something changed it.
-  refresh = ->
+  --
+  -- `rows` says the order or the contents have moved on, which is what makes
+  -- the grid read again. Left out after an edit that only changed one cell:
+  -- the answer to `dbc:set` carries that row, and rereading the table to show
+  -- one new value would throw away everything that had been scrolled past.
+  refresh = (rows) ->
     push_info!
-    push_window!
+    push_columns!
+    reload! if rows
 
   --- Reads the workspace's folder again.
   reload_tables = ->
@@ -504,7 +837,7 @@ M.mount = (window, state) ->
       sessions[name] = session
 
     active = session
-    at_row, at_col = 0, 0
+    active.from = 0
     say nil
 
     -- A file written in one language, opened at another, is the quiet way to
@@ -554,11 +887,11 @@ M.mount = (window, state) ->
     state\set "active_tab", id
     state\set "tool", "dbc"
     state\set "dbc_row", 0
-    refresh!
 
-    -- Back to the top. The block being drawn is this table's first, and a
-    -- scrollbar left where the last table was would disagree with it.
-    scroll_to 0
+    -- The columns are this table's, so the grid is rebuilt rather than told to
+    -- read again - and a new grid starts at the first page, which is also how
+    -- the scrollbar ends up back at the top.
+    refresh true
 
   --- The column the page named, or nil.
   column_at = (index) ->
@@ -601,16 +934,44 @@ M.mount = (window, state) ->
 
     state\set "tabs", json.array tabs if changed
 
-  window\handle "dbc:window", (payload) ->
-    return nil unless active and type(payload) == "table"
+  --- One row, in the shape the grid holds it.
+  --
+  -- Handed back from a write so the grid can show what Lua actually holds
+  -- without asking for the table again. Rereading it to show one new value
+  -- would throw away every page that had been scrolled past.
+  ---@param index integer
+  ---@return table|nil
+  row_payload = (index) -> active and editor.row_at active, index
 
-    row = math.max 0, math.floor tonumber(payload.row) or 0
-    col = math.max 0, math.floor tonumber(payload.col) or 0
-    return nil if row == at_row and col == at_col
+  --- One page of rows, as Tabulator asks for them.
+  --
+  -- Where the sort is applied too. The library sends the field and the
+  -- direction; Lua sorts the whole table, which Tabulator cannot - it holds
+  -- only what has been scrolled past. The field is a column index rather than
+  -- a label, because two localised columns of one field differ only by slot.
+  window\handle "dbc:page", (payload) ->
+    empty = { data: json.array({}), last_page: 1 }
+    return empty unless active and type(payload) == "table"
 
-    at_row, at_col = row, col
-    push_window!
-    nil
+    sorters = type(payload.sorters) == "table" and payload.sorters or {}
+    first = sorters[1]
+
+    column, descending = nil, false
+    if first and type(first.field) == "string"
+      column = tonumber first.field\match "^c(%d+)$"
+      descending = first.dir == "desc"
+
+    held = active.sort
+    same = if column == nil
+      held == nil
+    else
+      held != nil and held.column == column and held.descending == descending
+
+    unless same
+      editor.sort_by active, column, descending
+      push_info!
+
+    editor.page active, payload.page, payload.size
 
   window\handle "dbc:set", (payload) ->
     return nil unless active and type(payload) == "table"
@@ -618,12 +979,94 @@ M.mount = (window, state) ->
     column = column_at payload.column
     return nil unless column
 
-    ok, err = editor.set_cell active, payload.row, column, tostring payload.value
+    index = tonumber(payload.row) or 0
+    ok, err = editor.set_cell active, index, column, tostring payload.value
     if ok then say nil else say "#{column.label}: #{err}"
 
     -- Editing is the other way a table stops being something you glanced at.
     pin_active!
-    refresh!
+
+    -- The changed-rows view is a filter over the change set, so a write can
+    -- put a row into it or take one out. Everywhere else one cell moved, and
+    -- the row handed back below is enough to show it.
+    refresh active.changed_only
+    { row: row_payload index }
+
+  --- Writes a block of cells as one step.
+  --
+  -- What a paste is. Every cell goes through `editor.set_cell` and nothing
+  -- else does, each one pcalled, so a cell the column will not take keeps its
+  -- text and its reason while the rest go in - and the whole block is one
+  -- thing to take back.
+  window\handle "dbc:paste", (payload) ->
+    return nil unless active and type(payload) == "table"
+
+    cells = type(payload.cells) == "table" and payload.cells or {}
+    written, refused = editor.paste active, cells
+
+    if #refused > 0
+      say "#{#refused} of #{written + #refused} cells were refused:
+        #{refused[1].message}"
+    else
+      say nil
+
+    pin_active!
+    refresh active.changed_only
+
+    -- Every row the paste touched, so the grid shows what Lua holds rather
+    -- than what was on the clipboard.
+    touched, rows = {}, {}
+    for cell in *cells
+      index = tonumber cell.row
+      continue unless index and not touched[index]
+      touched[index] = true
+      row = row_payload index
+      table.insert rows, row if row
+
+    { :written, refused: #refused, rows: json.array rows }
+
+  --- Which columns the grid shows, and in what order.
+  window\handle "dbc:columns", (payload) ->
+    return nil unless active and type(payload) == "table"
+
+    if payload.every != nil
+      hidden = {}
+      unless payload.every
+        hidden[index] = true for index = 1, #active.columns
+      editor.set_layout active, nil, hidden
+
+    elseif payload.column
+      index = tonumber payload.column
+      if index
+        hidden = { key, value for key, value in pairs active.hidden }
+        hidden[index] = (not payload.shown) or nil
+        editor.set_layout active, nil, hidden
+
+    elseif type(payload.order) == "table"
+      editor.set_layout active, payload.order, nil
+
+    -- The columns are what the grid is built from, so this rebuilds it, and
+    -- the rows come with it: a hidden column is one nothing reads, and the
+    -- pages already fetched were read without it.
+    push_info!
+    push_columns!
+    reload!
+    nil
+
+  --- Pages over the changed rows alone, or over all of them again.
+  window\handle "dbc:changed-only", ->
+    return nil unless active
+
+    editor.set_changed_only active, not active.changed_only
+    refresh true
+    nil
+
+  --- Back to the first row, after a jump left the grid partway down.
+  window\handle "dbc:top", ->
+    return nil unless active
+
+    editor.set_from active, 0
+    refresh true
     nil
 
   window\handle "dbc:add", ->
@@ -636,7 +1079,7 @@ M.mount = (window, state) ->
 
     say nil
     state\set "dbc_row", index
-    refresh!
+    refresh true
     nil
 
   window\handle "dbc:duplicate", ->
@@ -654,7 +1097,7 @@ M.mount = (window, state) ->
 
     say nil
     state\set "dbc_row", made
-    refresh!
+    refresh true
     nil
 
   -- Asking first, because a deletion is the one thing here that cannot be seen
@@ -686,7 +1129,7 @@ M.mount = (window, state) ->
     -- The row that took its place is the sensible thing to be on, unless the
     -- one deleted was the last.
     state\set "dbc_row", math.min index, active.table\Count!
-    refresh!
+    refresh true
     nil
 
   --- Searches the open table.
@@ -700,29 +1143,20 @@ M.mount = (window, state) ->
     ok, err = editor.set_query active, text
     state\set "dbc_query_error", ok and "" or tostring err
 
-    -- Back to the top: the rows under the bar are a different set now, and a
-    -- scrollbar left where the unfiltered table had it would point past them.
-    at_row = 0
-    refresh!
-    scroll_to 0 if ok
-    nil
-
-  --- Sorts by a column, through ascending, descending and back to file order.
-  window\handle "dbc:sort", (index) ->
-    return nil unless active
-
-    editor.set_sort active, tonumber index
-    at_row = 0
-    refresh!
-    scroll_to 0
+    -- Back to the first page: the rows under the bar are a different set now,
+    -- and an anchor left by a jump points into the set they replaced.
+    editor.set_from active, 0
+    refresh true
     nil
 
   --- Sets one column's width.
+  --
+  -- The grid is not told. The drag it came from is what moved the column, and
+  -- pushing the width back would answer a question nobody asked.
   window\handle "dbc:resize", (payload) ->
     return nil unless active and type(payload) == "table"
 
     editor.set_width active, (tonumber payload.column), (tonumber(payload.width) or 0)
-    push_window!
     nil
 
   --- Reopens the table reading and writing at another language.
@@ -762,7 +1196,10 @@ M.mount = (window, state) ->
     -- Resolving reads the referenced tables, and the first draw after turning
     -- it on is when that happens. Said rather than left as a pause.
     say wanted and "Reading the referenced tables..." or nil
-    refresh!
+
+    -- Every cell reads differently now, so the pages already fetched are
+    -- showing numbers where they should be showing names.
+    refresh true
     say nil
     nil
 
@@ -870,29 +1307,32 @@ M.mount = (window, state) ->
     say nil
     state\set "dbc_row", found
 
-    -- Put it a few rows below the top, where it is easier to see than pinned
-    -- against the header.
-    at_row = math.max 0, found - 4
-    refresh!
-
-    -- The scroller is the page's, so the page is what has to be moved.
-    scroll_to at_row * view.METRICS.row
+    -- The grid is fed forwards, so a row deep in a large table is reached by
+    -- starting there rather than by scrolling to it: pulling the 39,999 rows
+    -- above it through the window first is the thing this design exists to
+    -- avoid. A few rows above it, so it is not pinned under the header, and
+    -- the strip says where the view begins with the way back beside it.
+    position = editor.position_of active, found
+    editor.set_from active, math.max 0, (position or found) - 4
+    refresh true
     nil
 
   window\handle "dbc:preview", ->
     state\set "dbc_preview", active and editor.script(active) or ""
     nil
 
+  -- A step back can be a row coming or going as easily as a cell changing, so
+  -- the rows are asked for again rather than guessed at.
   undo = ->
     return "Nothing is open" unless active
     ok, err = editor.undo active
-    refresh!
+    refresh true
     ok and "Undone" or err
 
   redo = ->
     return "Nothing is open" unless active
     ok, err = editor.redo active
-    refresh!
+    refresh true
     ok and "Redone" or err
 
   --- Writes one session, whether or not it is the one on screen.
@@ -926,7 +1366,7 @@ M.mount = (window, state) ->
 
     ok, line = save_session active
     say ok and nil or line
-    refresh!
+    refresh false
     line
 
   --- Writes every table holding changes.
@@ -945,7 +1385,7 @@ M.mount = (window, state) ->
       error line unless ok
       table.insert written, name
 
-    refresh!
+    refresh false
     return "Nothing to save" if #written == 0
     "Saved #{table.concat written, ", "}"
 
@@ -988,7 +1428,6 @@ M.mount = (window, state) ->
     relations.reset!
     sessions = {}
     active = nil
-    at_row, at_col = 0, 0
 
     state\set "dbc_preview", ""
 
@@ -1000,7 +1439,7 @@ M.mount = (window, state) ->
     state\set "active_tab", "" if showing\match "^dbc:"
 
     reload_tables!
-    refresh!
+    refresh true
 
   -- Not now: mount runs while the window is still coming up, and the store is
   -- inlined into the document, so `nui` does not exist yet and the whole
@@ -1010,7 +1449,7 @@ M.mount = (window, state) ->
     install_page_helpers!
 
   reload_tables!
-  refresh!
+  refresh false
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- Registration
@@ -1023,6 +1462,16 @@ M.tool = tools.register {
   label: "DBC Editor"
   icon: "table"
   description: "Open the client's DBC tables and edit them row by row."
+
+  -- Tabulator's own, loaded with the page rather than on demand the way
+  -- Cytoscape is: the graph is a view most sessions never open, and the grid
+  -- is what this tool *is*. Deferring it would put a promise in the one path
+  -- that must not race the container's measurement.
+  --
+  -- Before the application's stylesheet, so a rule of ours beats one of
+  -- Tabulator's at the same specificity.
+  head: '<link rel="stylesheet" href="neutrino://app/assets/tabulator.min.css">' ..
+    '<script src="neutrino://app/assets/tabulator.min.js"></script>'
 
   actions: {
     {
@@ -1131,9 +1580,18 @@ M.tool = tools.register {
     dbc_open_on: library.setting "open_on"
     dbc_picked: ""
 
-    -- Bumped whenever the view should return to the top. The page watches it;
-    -- the number itself means nothing.
-    dbc_top: 0
+    -- Bumped whenever the rows or their order have moved on and the grid has
+    -- to read them again from the first page. The page watches it; the number
+    -- itself means nothing.
+    dbc_reload: 0
+
+    -- The columns the grid draws, in order, each saying whether it is on
+    -- screen. The grid is rebuilt when this changes and only then.
+    dbc_columns: json.array {}
+    dbc_cols_open: false
+
+    -- Whether the grid is paging over the changed rows alone.
+    dbc_changed_only: false
 
     -- Referenced ids shown with the row they refer to, and whether a cell
     -- offers that table's rows when it is edited.
@@ -1156,12 +1614,8 @@ M.tool = tools.register {
     dbc_info: {
       rows: 0, shown: 0, columns: 0, has_id: false, format: "", changes: 0
       spread: false
+      from: 0
       locale: workspace.setting "locale"
-    }
-
-    dbc_grid: {
-      row: 0, col: 0, total_rows: 0, total_cols: 0, total_width: 0, x: 0
-      columns: json.array {}, rows: json.array {}, offsets: json.array { 0 }
     }
   }
 
@@ -1290,8 +1744,13 @@ sections.register {
         session.spread = session.slots != nil
         session.columns = editor.columns session.schema, session.locale,
           session.slots
+        -- The column list is a different list, so everything keyed on a column
+        -- index describes columns that are no longer there.
         session.widths = {}
+        session.hidden = {}
+        session.order = nil
         session.sort = nil
+        session.from = 0
         session.stale = true
 
     true

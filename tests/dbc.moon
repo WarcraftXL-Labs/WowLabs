@@ -163,26 +163,40 @@ t.check "and no column claims to be one",
 
 -- ═══════════════════════════════════════════════════════════════════════════
 
-t.section "The window the grid binds"
+t.section "The pages the grid asks for"
 
-window = editor.window session, 0, 0, 4, 8
+-- The grid holds what was scrolled past and nothing more, so a page is the
+-- unit everything below it is built on.
 
-t.check "only the rows asked for come back", #window.rows == 4,
-  "#{#window.rows} rows"
-t.check "and the whole size comes with them", window.total_rows == 6,
-  "#{window.total_rows}"
-t.check "a row knows its index and its ID",
-  window.rows[2].index == 2 and window.rows[2].id == 2
-t.check "a cell holds what is in the record",
-  window.rows[2].cells[2].v == "Sac 2", window.rows[2].cells[2].v
+first = editor.page session, 1, 4
 
--- The same index is the same row whichever window it arrives in, which is the
--- whole basis of asking for one block at a time.
-far = editor.window session, 4, 0, 4, 8
-t.check "a later window starts where it was asked to", far.row == 4,
-  "#{far.row}"
-t.check "and reads the same rows as a full one would",
-  far.rows[1].cells[2].v == "Sac 5", far.rows[1].cells[2].v
+t.check "only the rows asked for come back", #first.data == 4,
+  "#{#first.data} rows"
+t.check "and the number of pages comes with them", first.last_page == 2,
+  "#{first.last_page}"
+t.check "a row is named by its index in the file, and carries its ID",
+  first.data[2]._i == 2 and first.data[2]._id == 2
+t.check "a cell is keyed by its column's index",
+  first.data[2].c2 == "Sac 2", tostring first.data[2].c2
+
+-- The same index is the same row whichever page it arrives on, which is the
+-- whole basis of asking for one page at a time.
+second = editor.page session, 2, 4
+t.check "the next page carries on where the first stopped",
+  second.data[1]._i == 5, tostring second.data[1]._i
+t.check "and reads the same values a single page would",
+  second.data[1].c2 == "Sac 5", tostring second.data[1].c2
+
+t.check "a page past the end is empty rather than an error",
+  #(editor.page session, 9, 4).data == 0
+
+-- What the grid is built from, which is a different question from what it
+-- shows: the list carries every column, and says which are on screen.
+grid = editor.grid_columns session
+t.check "the columns come with a key per index", grid[2].key == "c2",
+  tostring grid[2].key
+t.check "and every one of them starts on screen",
+  #[column for column in *grid when column.shown] == #session.columns
 
 -- ═══════════════════════════════════════════════════════════════════════════
 
@@ -201,22 +215,23 @@ english = bags\GetRowByIndex(3)\GetField "Name_lang", "enUS"
 t.check "and the other locales are untouched", english == "Bag 3", english
 
 t.check "the cell is marked as changed",
-  (editor.window session, 2, 0, 1, 8).rows[1].cells[2].d == true
+  (editor.row_at session, 3)._d.c2 == true
 
 bad, bad_err = editor.set_cell locs, 1, (locs.columns[2]), "not a number"
 t.check "a value the column cannot hold is refused", bad == false, tostring bad_err
 t.check "and the record is left as it was",
   (editor.read locs, 1, locs.columns[2]) == "10"
 
-refused = (editor.window locs, 0, 0, 1, 8).rows[1].cells[2]
+refused = editor.row_at locs, 1
 t.check "but the edit is kept, with the reason",
-  refused.v == "not a number" and refused.e != nil, tostring refused.e
+  refused.c2 == "not a number" and refused._e.c2 != nil,
+  tostring refused._e and refused._e.c2
 
 -- Correcting it clears the refusal rather than leaving it stuck.
 editor.set_cell locs, 1, locs.columns[2], "11"
-corrected = (editor.window locs, 0, 0, 1, 8).rows[1].cells[2]
+corrected = editor.row_at locs, 1
 t.check "and a good value afterwards clears it",
-  corrected.v == "11" and corrected.e == nil, tostring corrected.e
+  corrected.c2 == "11" and corrected._e == nil, tostring corrected._e
 
 -- ═══════════════════════════════════════════════════════════════════════════
 
@@ -291,6 +306,173 @@ editor.undo session
 t.check "and undoing the addition leaves the table as it was",
   bags\Count! == before_rows, tostring bags\Count!
 t.check "with nothing left on the stack", editor.can_undo(session) == false
+
+-- ═══════════════════════════════════════════════════════════════════════════
+
+t.section "A paste is one step"
+
+-- A block of cells arriving at once, which is what DBC work is made of. Two
+-- hundred presses of Ctrl+Z to take one back would be unusable.
+
+pasted = editor.session (library.open "WorldSafeLocs"), "WorldSafeLocs", "enUS",
+  BUILD
+paste_continent = pasted.columns[2]
+
+-- Read rather than assumed: lua-dbc hands out one table per name, so this is
+-- the same records the section above has been writing to.
+was = [editor.read pasted, index, paste_continent for index = 1, 3]
+
+before_paste = #pasted.stack
+written, refused = editor.paste pasted, {
+  { row: 1, column: 2, value: "71" }
+  { row: 2, column: 2, value: "72" }
+  { row: 3, column: 2, value: "73" }
+}
+
+t.check "every cell in the block reaches the record", written == 3,
+  "#{written} written"
+t.check "and none of them was refused", #refused == 0,
+  refused[1] and refused[1].message
+
+t.check "the values are the pasted ones",
+  (editor.read pasted, 1, paste_continent) == "71" and
+    (editor.read pasted, 3, paste_continent) == "73",
+  editor.read pasted, 3, paste_continent
+
+t.check "and the whole paste is one step on the stack",
+  #pasted.stack == before_paste + 1, "#{#pasted.stack} entries"
+
+editor.undo pasted
+t.check "so one undo takes all of it back",
+  (editor.read pasted, 1, paste_continent) == was[1] and
+    (editor.read pasted, 2, paste_continent) == was[2] and
+    (editor.read pasted, 3, paste_continent) == was[3],
+  "#{editor.read pasted, 1, paste_continent}, " ..
+    "#{editor.read pasted, 2, paste_continent}, " ..
+    "#{editor.read pasted, 3, paste_continent}"
+
+t.check "with nothing left to undo", editor.can_undo(pasted) == false
+
+editor.redo pasted
+t.check "and one redo puts all of it back",
+  (editor.read pasted, 1, paste_continent) == "71" and
+    (editor.read pasted, 3, paste_continent) == "73",
+  editor.read pasted, 3, paste_continent
+
+editor.undo pasted
+
+-- A group holds what happened, not what was attempted. A cell the column will
+-- not take never reaches the record, so there is nothing about it to undo -
+-- but the text it was given is kept, exactly as a typed edit's is.
+mixed_written, mixed_refused = editor.paste pasted, {
+  { row: 1, column: 2, value: "81" }
+  { row: 2, column: 2, value: "not a number" }
+  { row: 3, column: 2, value: "83" }
+}
+
+t.check "a cell the column refuses does not stop the rest",
+  mixed_written == 2 and #mixed_refused == 1,
+  "#{mixed_written} written, #{#mixed_refused} refused"
+
+t.check "the ones that took are in the record",
+  (editor.read pasted, 1, paste_continent) == "81" and
+    (editor.read pasted, 3, paste_continent) == "83",
+  editor.read pasted, 3, paste_continent
+
+t.check "the one that did not left the record alone",
+  (editor.read pasted, 2, paste_continent) == was[2],
+  editor.read pasted, 2, paste_continent
+
+kept = editor.row_at pasted, 2
+t.check "but kept what was typed, with the reason",
+  kept.c2 == "not a number" and kept._e.c2 != nil,
+  tostring kept._e and kept._e.c2
+
+editor.undo pasted
+t.check "and one undo takes back exactly the writes that happened",
+  (editor.read pasted, 1, paste_continent) == was[1] and
+    (editor.read pasted, 3, paste_continent) == was[3] and
+    editor.can_undo(pasted) == false,
+  editor.read pasted, 1, paste_continent
+
+-- Every cell refused is not a step at all: a Ctrl+Z spent undoing nothing is
+-- a Ctrl+Z that does not reach the edit before it.
+none_written = editor.paste pasted, {
+  { row: 1, column: 2, value: "rubbish" }
+}
+t.check "a paste that takes nothing leaves nothing on the stack",
+  none_written == 0 and editor.can_undo(pasted) == false
+
+-- ═══════════════════════════════════════════════════════════════════════════
+
+t.section "The changed rows on their own"
+
+-- What you want in front of you before saving, and a filter over the change
+-- set rather than a second record of what happened.
+
+watched = editor.session (library.open "WorldSafeLocs"), "WorldSafeLocs",
+  "enUS", BUILD
+watched_continent = watched.columns[2]
+
+editor.set_changed_only watched, true
+t.check "with nothing changed the view is empty",
+  editor.visible(watched) == 0, tostring editor.visible watched
+
+editor.set_cell watched, 3, watched_continent, "44"
+t.check "an edit puts its row into the view",
+  editor.visible(watched) == 1 and (editor.at watched, 1) == 3,
+  "#{editor.visible watched} rows"
+
+editor.set_cell watched, 5, watched_continent, "55"
+t.check "and a second edit puts a second one in",
+  editor.visible(watched) == 2, tostring editor.visible watched
+
+t.check "the page over it holds those rows and no others",
+  #(editor.page watched, 1, 50).data == 2 and
+    (editor.page watched, 1, 50).data[1]._i == 3,
+  tostring (editor.page watched, 1, 50).data[1]._i
+
+-- A cell put back where it started is not a change, so its row leaves the
+-- view. Anything that recorded the keystroke rather than the net effect would
+-- keep it.
+editor.set_cell watched, 3, watched_continent, "30"
+t.check "a row edited back to where it started leaves again",
+  editor.visible(watched) == 1 and (editor.at watched, 1) == 5,
+  "#{editor.visible watched} rows"
+
+editor.undo watched
+t.check "and an undo is felt by the view too",
+  editor.visible(watched) == 2, tostring editor.visible watched
+
+editor.set_changed_only watched, false
+t.check "turning it off puts every row back",
+  editor.visible(watched) == 5, tostring editor.visible watched
+
+-- ═══════════════════════════════════════════════════════════════════════════
+
+t.section "Starting partway down"
+
+-- The grid is fed forwards, so a row deep in a large table is reached by
+-- beginning there rather than by scrolling to it.
+
+anchored = editor.session (library.open "Spell"), "Spell", "enUS", BUILD
+
+t.check "by default the first page is the first rows",
+  (editor.page anchored, 1, 10).data[1]._i == 1
+
+editor.set_from anchored, 1500
+jumped = editor.page anchored, 1, 10
+
+t.check "an anchor moves where the first page starts",
+  jumped.data[1]._i == 1501, tostring jumped.data[1]._i
+t.check "and the page count is of what is left below it",
+  jumped.last_page == 50, tostring jumped.last_page
+t.check "while the page says where it began",
+  jumped.from == 1500, tostring jumped.from
+
+editor.set_from anchored, 0
+t.check "putting it back starts from the first row again",
+  (editor.page anchored, 1, 10).data[1]._i == 1
 
 -- ═══════════════════════════════════════════════════════════════════════════
 
@@ -590,37 +772,44 @@ t.section "Sorting"
 names = finder.columns[2]
 by_name = 2
 
-editor.set_sort finder, by_name
+editor.sort_by finder, by_name, false
 t.check "ascending puts the first name first",
   (editor.read finder, (editor.at finder, 1), names) == "Sac 1",
   editor.read finder, (editor.at finder, 1), names
 
-sort = editor.set_sort finder, by_name
-t.check "the same column again turns it round", sort.descending == true
+sort = editor.sort_by finder, by_name, true
+t.check "the other direction is asked for rather than cycled to",
+  sort.descending == true
 t.check "and the last name is now first",
   (editor.read finder, (editor.at finder, 1), names) == "Sac 6",
   editor.read finder, (editor.at finder, 1), names
 
-t.check "a third time puts the file's own order back",
-  (editor.set_sort finder, by_name) == nil and (editor.at finder, 1) == 1
+-- The grid sends the direction with every page it asks for, so the same sort
+-- arrives over and over. A cycle would turn it off on the second page.
+editor.sort_by finder, by_name, true
+t.check "and asking for the same one twice does not turn it off",
+  finder.sort != nil and finder.sort.descending == true,
+  tostring finder.sort
+
+t.check "while asking for none puts the file's own order back",
+  (editor.sort_by finder, nil, false) == nil and (editor.at finder, 1) == 1
 
 -- Sorting must not move a row, only where it is drawn: everything recorded
 -- about an edit names the index, and a sort that renumbered rows would make
 -- every change in the set point somewhere else.
-editor.set_sort finder, by_name
-window_sorted = editor.window finder, 0, 0, 6, 4
-t.check "a sorted window still reports each row's real index",
-  window_sorted.rows[1].index == 1 and window_sorted.rows[6].index == 6,
-  "#{window_sorted.rows[1].index}..#{window_sorted.rows[6].index}"
-editor.set_sort finder, nil
+editor.sort_by finder, by_name, false
+sorted_page = editor.page finder, 1, 6
+t.check "a sorted page still reports each row's real index",
+  sorted_page.data[1]._i == 1 and sorted_page.data[6]._i == 6,
+  "#{sorted_page.data[1]._i}..#{sorted_page.data[6]._i}"
 
 -- A filter and a sort are one order, not two that fight.
 editor.set_query finder, "ID > 3"
-editor.set_sort finder, by_name
+editor.sort_by finder, by_name, false
 t.check "a sort applies to what the search left",
   editor.visible(finder) == 3 and (editor.at finder, 1) == 4,
   "#{editor.visible finder} rows, first #{tostring editor.at finder, 1}"
-editor.set_sort finder, nil
+editor.sort_by finder, nil, false
 editor.set_query finder, ""
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -642,15 +831,53 @@ t.check "and cannot be dragged past what fits",
   (editor.width_of finder, 1) == 900, tostring editor.width_of finder, 1
 
 editor.set_width finder, 1, 200
-sized = editor.window finder, 0, 0, 2, 4
+sized = editor.grid_columns finder
 
-t.check "the window carries each column's width", sized.columns[1].w == 200,
-  tostring sized.columns[1].w
-t.check "and where every column starts",
-  sized.offsets[1] == 0 and sized.offsets[2] == 200,
-  "#{tostring sized.offsets[1]}, #{tostring sized.offsets[2]}"
-t.check "and how wide the whole table is",
-  sized.total_width == 200 + editor.DEFAULT_WIDTH, tostring sized.total_width
+t.check "the grid's columns carry the width each was left at",
+  sized[1].w == 200 and sized[2].w == editor.DEFAULT_WIDTH,
+  "#{tostring sized[1].w}, #{tostring sized[2].w}"
+
+-- ═══════════════════════════════════════════════════════════════════════════
+
+t.section "Which columns are on screen, and in what order"
+
+-- Spell has 105 columns and nobody wants all of them, so this is a property of
+-- the session beside the widths rather than of the page.
+
+editor.set_layout finder, nil, { [1]: true }
+hidden_layout = editor.grid_columns finder
+
+t.check "a hidden column is still in the list, marked",
+  #hidden_layout == 2 and hidden_layout[1].shown == false,
+  "#{#hidden_layout} columns"
+
+t.check "and its values are not read at all",
+  (editor.page finder, 1, 1).data[1].c1 == nil,
+  tostring (editor.page finder, 1, 1).data[1].c1
+
+t.check "while the ones on screen still are",
+  (editor.page finder, 1, 1).data[1].c2 == "Sac 1",
+  tostring (editor.page finder, 1, 1).data[1].c2
+
+editor.set_layout finder, nil, {}
+t.check "putting it back brings its values with it",
+  (editor.page finder, 1, 1).data[1].c1 == "1",
+  tostring (editor.page finder, 1, 1).data[1].c1
+
+editor.set_layout finder, { 2, 1 }, nil
+reordered = editor.grid_columns finder
+t.check "a reorder moves the columns and not the keys",
+  reordered[1].key == "c2" and reordered[2].key == "c1",
+  "#{reordered[1].key}, #{reordered[2].key}"
+
+-- A column the order does not mention has to appear rather than disappear:
+-- changing the locale mode adds columns to a session that already has one.
+editor.set_layout finder, { 2 }, nil
+partial = editor.grid_columns finder
+t.check "and one the order leaves out goes to the end rather than away",
+  #partial == 2 and partial[2].key == "c1", "#{#partial} columns"
+
+editor.set_layout finder, { 1, 2 }, {}
 
 -- ═══════════════════════════════════════════════════════════════════════════
 
@@ -880,6 +1107,122 @@ app\on "ready", ->
 
     t.wait_until -> window\is_visible!
 
+    -- ── The grid ──────────────────────────────────────────────────────────
+    --
+    -- Tabulator is handed the container only once that container has a size,
+    -- so it is built a frame or two after the table opens. Nothing below may
+    -- assume it is already there.
+
+    -- Cells on screen, with a size, inside the host. A count of rows or of
+    -- elements is true of a grid laid out into a box of no height.
+    drawn = -> window\eval "window.__gridDrawn ? window.__gridDrawn() : 0"
+
+    -- How many rows the library is holding, which is how "fed a page at a
+    -- time" is told apart from "handed the whole table".
+    held = -> window\eval "window.__grid && window.__grid()
+      ? window.__grid().getDataCount() : -1"
+
+    elements = -> window\eval "document.querySelectorAll('.dbc-grid .tabulator-cell').length"
+
+    why = -> tostring window\eval "window.__gridDebug ? window.__gridDebug() : 'no grid'"
+
+    columns_shown = -> window\eval "nui.get('dbc_columns').filter(c => c.shown).length"
+
+    -- The grid is destroyed and rebuilt whenever the columns change, so "there
+    -- are cells on screen" is true of the table before this one for as long as
+    -- the rebuild takes. This waits for the grid to be the one the store is
+    -- describing, and then for it to have drawn something.
+    matches_store = -> window\eval "(() => {
+      const g = window.__grid && window.__grid()
+      if (!g) return 0
+      const want = nui.get('dbc_columns').filter(c => c.shown).length
+      const have = g.getColumns()
+        .filter(c => (c.getField() || '').charAt(0) === 'c').length
+      return want > 0 && want === have && g.getDataCount() > 0 ? 1 : 0
+    })()"
+
+    showing = ->
+      settled = t.wait_until -> matches_store! == 1
+      settled and (t.wait_until -> drawn! > 0)
+
+    --- What one cell holds, by row index in the file and column index.
+    value_at = (index, column) -> window\eval "(() => {
+      const g = window.__grid && window.__grid()
+      const row = g && g.getRow(#{index})
+      return row ? String(row.getData()['c#{column}']) : ''
+    })()"
+
+    --- A theme token, as the browser computes it.
+    --
+    -- Through a probe element rather than read off the custom property: the
+    -- property is the text "#131317" and every computed colour is "rgb(19,
+    -- 19, 23)", and comparing the two forms would never match.
+    token = (name) -> window\eval "(() => {
+      const probe = document.createElement('span')
+      probe.style.color = getComputedStyle(document.documentElement)
+        .getPropertyValue(#{json.encode name}).trim()
+      document.body.appendChild(probe)
+      const value = getComputedStyle(probe).color
+      probe.remove()
+      return value
+    })()"
+
+    --- What the browser actually paints one element with.
+    styled = (selector, property) -> window\eval "(() => {
+      const el = document.querySelector('.dbc-grid ' + #{json.encode selector})
+      return el ? getComputedStyle(el)[#{json.encode property}] : ''
+    })()"
+
+    --- A painted colour as four numbers, whatever spelling the browser used.
+    --
+    -- A mix computes to `color(srgb 0.82 0.63 0.35 / 0.14)` rather than to
+    -- `rgba(...)`, and comparing those two as text never matches however
+    -- right the colour is.
+    channels = (selector, property) -> window\eval "(() => {
+      const el = document.querySelector('.dbc-grid ' + #{json.encode selector})
+      if (!el) return ''
+      const value = getComputedStyle(el)[#{json.encode property}]
+      const mix = value.match(/color\\(srgb ([\\d.]+) ([\\d.]+) ([\\d.]+)(?: \\/ ([\\d.]+))?\\)/)
+      if (mix) return [Math.round(mix[1] * 255), Math.round(mix[2] * 255),
+        Math.round(mix[3] * 255), mix[4] === undefined ? 1 : Number(mix[4])].join(',')
+      const plain = value.match(/rgba?\\(([^)]+)\\)/)
+      if (!plain) return ''
+      const parts = plain[1].split(',').map(Number)
+      return [parts[0], parts[1], parts[2],
+        parts[3] === undefined ? 1 : parts[3]].join(',')
+    })()"
+
+    --- Anything inside the grid still wearing the library's own palette.
+    --
+    -- Cheap, and it catches the whole class of "that part was not styled" at
+    -- once: white is not in this interface, so anything computing to it is
+    -- something the theme never reached.
+    white = -> window\eval "(() => {
+      const host = document.querySelector('.dbc-grid')
+      if (!host) return 'no host'
+      const found = []
+      for (const el of [host, ...host.querySelectorAll('*')]) {
+        const style = getComputedStyle(el)
+        const name = el.className && el.className.baseVal === undefined
+          ? String(el.className).split(' ')[0] : el.tagName
+        if (style.backgroundColor === 'rgb(255, 255, 255)') found.push('bg ' + name)
+        if (style.color === 'rgb(255, 255, 255)') found.push('text ' + name)
+      }
+      return found.slice(0, 6).join(', ')
+    })()"
+
+    --- Types into a cell the way a person does: open it, type, commit.
+    type_into = (index, column, text) -> window\exec_js "(() => {
+      const g = window.__grid()
+      const cell = g.getRow(#{index}).getCell('c#{column}')
+      const el = cell.getElement()
+      el.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
+      const input = el.querySelector('input')
+      if (!input) return
+      input.value = #{json.encode text}
+      input.dispatchEvent(new Event('change', { bubbles: true }))
+    })()"
+
     t.section "The table list"
 
     t.check "the tables are there on the first paint",
@@ -954,8 +1297,8 @@ app\on "ready", ->
     t.check "and a kept tab is no longer replaced by the next read",
       (t.wait_until -> (tab_titles!)\match("dbc:ItemBagFamily") != nil), tab_titles!
 
-    window\exec_js "document.querySelector('.dbc-cell').value = '12';
-      document.querySelector('.dbc-cell').dispatchEvent(new Event('change'))"
+    showing!
+    type_into 1, 2, "12"
 
     t.check "editing a read-only tab keeps it too",
       (t.wait_until -> none_previewed! == true), tab_titles!
@@ -980,14 +1323,18 @@ app\on "ready", ->
     t.check "and it arrives as a tab of its own",
       (window\eval "nui.get('active_tab')") == "dbc:ItemBagFamily"
 
-    t.check "the grid draws a row for each one in the window",
-      (t.wait_until -> (window\eval "document.querySelectorAll('.dbc-cell').length") > 0),
-      "no cells"
+    -- Not "a grid was built" and not "six rows arrived", both of which are
+    -- true of a grid laid out into a box of no height. Cells on screen, with
+    -- a size, inside the host.
+    t.check "the grid draws cells on screen, inside its box, with a size",
+      showing!, why!
 
-    -- On screen, not merely in the document: the tool's work area is shown by
-    -- which tab is active, and a region left hidden would still be counted.
-    t.check "and it is the region on screen",
-      (window\eval "document.querySelector('.dbc-cell').getClientRects().length") > 0
+    -- One per value of every row, plus the row's own number frozen beside it.
+    t.check "one for every value the table holds",
+      (t.wait_until -> drawn! == 6 * (columns_shown! + 1)),
+      "#{drawn!} of #{6 * (columns_shown! + 1)} :: #{why!}"
+
+    t.check "and holds only the rows it asked for", held! == 6, tostring held!
 
     t.check "with the table list beside it",
       (window\eval "document.querySelector('.dbc-table').getClientRects().length") > 0
@@ -1000,23 +1347,90 @@ app\on "ready", ->
         .some(el => el.getClientRects().length > 0 &&
           el.textContent.trim() === 'All languages')") == true
 
-    -- The whole table sizes the scroller; only what is visible is drawn.
-    t.check "the scroller is the size of the whole table",
-      (window\eval "document.querySelector('.dbc-scroller').firstElementChild
-        .getBoundingClientRect().height") == 6 * 22 + 26,
-      tostring window\eval "document.querySelector('.dbc-scroller')
-        .firstElementChild.getBoundingClientRect().height"
+    headers = -> window\eval "[...document.querySelectorAll(
+      '.dbc-grid .tabulator-col-title')].map(el => el.textContent.trim()).join('|')"
 
-    headers = -> window\eval "[...document.querySelectorAll('.dbc-head')]
-      .map(el => el.innerText.replace(/\\s+/g, ' ').trim()).join('|')"
-
-    t.check "the header names the columns and their kinds",
-      (headers!)\match("Name_lang enUS loc enUS") != nil, headers!
+    t.check "the header names the columns",
+      (headers!)\match("Name_lang enUS") != nil, headers!
 
     -- The second language, which is the point of showing them all: a file
     -- translated into four and showing one looks like it lost three.
     t.check "and one column per language the file carries",
-      (headers!)\match("Name_lang frFR loc frFR") != nil, headers!
+      (headers!)\match("Name_lang frFR") != nil, headers!
+
+    -- The row's place in the file is its identity, and all that the 22 tables
+    -- without an ID have. It is frozen beside the values, not inferred.
+    t.check "and the row's own index is beside it",
+      (window\eval "document.querySelector('.dbc-grid .dbc-rowhead')
+        .textContent.trim()") == "1",
+      tostring window\eval "document.querySelector('.dbc-grid .dbc-rowhead')
+        .textContent.trim()"
+
+    t.section "The grid wears the theme"
+
+    -- Not "the rules are in the stylesheet" and not "the class is on the
+    -- element": either would pass against a grid rendering white on white.
+    -- What the browser computed, against the tokens it was meant to compute
+    -- from.
+
+    t.check "the header is the raised surface",
+      (styled '.tabulator-header', 'backgroundColor') == token '--color-base-850',
+      "#{styled '.tabulator-header', 'backgroundColor'} against
+        #{token '--color-base-850'}"
+
+    -- The one that was missed: Tabulator paints this white, and rows left
+    -- transparent show it through rather than the surface beneath them.
+    t.check "and the table under the rows is the work area's own colour",
+      (styled '.tabulator-tableholder .tabulator-table', 'backgroundColor') ==
+        token '--color-base-900',
+      "#{styled '.tabulator-tableholder .tabulator-table', 'backgroundColor'} against
+        #{token '--color-base-900'}"
+
+    t.check "a row is that colour too, rather than banded",
+      (styled '.tabulator-row', 'backgroundColor') == token '--color-base-900',
+      styled '.tabulator-row', 'backgroundColor'
+
+    t.check "and so is the second one",
+      (styled '.tabulator-row.tabulator-row-even', 'backgroundColor') ==
+        token '--color-base-900',
+      styled '.tabulator-row.tabulator-row-even', 'backgroundColor'
+
+    -- The third row, deliberately: the grid opens with a range on the first
+    -- one, and a highlighted cell is painted for being selected rather than
+    -- for being a cell.
+    plain_cell = '.tabulator-row:nth-child(3) .tabulator-cell[tabulator-field="c2"]'
+    plain_number = '.tabulator-row:nth-child(3) .tabulator-cell.dbc-rownum'
+
+    t.check "a cell is the ink colour",
+      (styled plain_cell, 'color') == token '--color-ink',
+      "#{styled plain_cell, 'color'} against #{token '--color-ink'}"
+
+    t.check "on the line colour, faintly",
+      (styled plain_cell, 'borderRightColor') == token '--color-line-soft',
+      "#{styled plain_cell, 'borderRightColor'} against
+        #{token '--color-line-soft'}"
+
+    -- Numbers in a column have to line up to be read down, which is what the
+    -- monospace stack is for.
+    t.check "and set in the monospace face",
+      (styled plain_cell, 'fontFamily')\match("Cascadia") != nil,
+      styled plain_cell, 'fontFamily'
+
+    t.check "the frozen row number is opaque, so cells scroll under it",
+      (styled plain_number, 'backgroundColor') == token '--color-base-850',
+      "#{styled plain_number, 'backgroundColor'} against
+        #{token '--color-base-850'}"
+
+    -- Setting `scrollbar-width` makes Chromium draw its own and ignore every
+    -- ::-webkit-scrollbar rule. One or the other, never both - and the rules
+    -- are the application's, so this has to stay at auto.
+    t.check "and the scroller keeps the application's scrollbars",
+      (styled '.tabulator-tableholder', 'scrollbarWidth') == "auto",
+      styled '.tabulator-tableholder', 'scrollbarWidth'
+
+    -- The whole class of "that part was never styled", in one line.
+    t.check "nothing in the grid is still wearing the library's own palette",
+      white! == "", white!
 
     -- "New row" is offered where a new row can be told apart from its
     -- neighbours, and nowhere else.
@@ -1043,26 +1457,146 @@ app\on "ready", ->
 
     t.section "Editing a cell"
 
-    -- Typed and committed the way a person commits: the value goes in, and
-    -- the change event fires on blur.
-    window\exec_js "
-      const cell = document.querySelectorAll('.dbc-cell')[1]
-      cell.focus()
-      cell.value = 'Sac modifie'
-      cell.dispatchEvent(new Event('change', { bubbles: true }))"
+    showing!
+
+    -- Typed and committed the way a person does: double-click the cell, type,
+    -- and let the change event fire.
+    type_into 1, 2, "Sac modifie"
 
     t.check "the edit reaches the record",
-      (t.wait_until ->
-        (window\eval "nui.get('dbc_grid').rows[0].cells[1].v") == "Sac modifie"),
-      tostring window\eval "nui.get('dbc_grid').rows[0].cells[1].v"
+      (t.wait_until -> (value_at 1, 2) == "Sac modifie"), value_at 1, 2
+
+    marked = -> window\eval "document.querySelectorAll(
+      '.dbc-grid .tabulator-cell.is-dirty').length"
 
     t.check "and the cell is marked as changed",
-      (t.wait_until -> (window\eval "[...document.querySelectorAll('.dbc-cell')]
-        .filter(el => el.classList.contains('is-dirty')).length") == 1)
+      (t.wait_until -> marked! == 1), tostring marked!
+
+    -- The accent, not some other amber: colour is information here, and a
+    -- changed cell is the one thing it says.
+    t.check "in the accent",
+      (styled '.tabulator-cell.is-dirty', 'color') == token '--color-accent',
+      "#{styled '.tabulator-cell.is-dirty', 'color'} against
+        #{token '--color-accent'}"
 
     t.check "the shell is told there is something to undo",
       (window\eval "nui.get('can_undo')") == true
     t.check "and something unsaved", (window\eval "nui.get('dirty')") == true
+
+    -- A value the column cannot hold keeps the text and says why, rather than
+    -- quietly putting back what is still in the record.
+    window\exec_js "[...document.querySelectorAll('.dbc-table')]
+      .find(el => el.innerText.trim() === 'WorldSafeLocs').click()"
+    t.wait_until -> (window\eval "nui.get('dbc_open')") == "WorldSafeLocs"
+    showing!
+
+    type_into 1, 2, "not a number"
+
+    t.check "a refused write keeps what was typed",
+      (t.wait_until -> (value_at 1, 2) == "not a number"), value_at 1, 2
+
+    t.check "and marks the cell as refused, with the reason",
+      (t.wait_until -> (window\eval "(() => {
+        const bad = document.querySelector('.dbc-grid .tabulator-cell.is-bad')
+        return bad ? bad.getAttribute('title') || '' : ''
+      })()")\match("number") != nil),
+      tostring window\eval "(() => {
+        const bad = document.querySelector('.dbc-grid .tabulator-cell.is-bad')
+        return bad ? bad.getAttribute('title') || '' : ''
+      })()"
+
+    t.check "and paints it in danger",
+      (styled '.tabulator-cell.is-bad', 'color') == token '--color-danger',
+      "#{styled '.tabulator-cell.is-bad', 'color'} against
+        #{token '--color-danger'}"
+
+    window\exec_js "[...document.querySelectorAll('.dbc-table')]
+      .find(el => el.innerText.trim() === 'ItemBagFamily').click()"
+    t.wait_until -> (window\eval "nui.get('dbc_open')") == "ItemBagFamily"
+    showing!
+
+    t.section "Moving about with the keyboard"
+
+    -- The friction the whole replacement is for: every cell had to be clicked.
+
+    window\exec_js "(() => {
+      const g = window.__grid()
+      g.addRange(g.getRow(2).getCell('c2'))
+    })()"
+
+    where = -> window\eval "(() => {
+      const g = window.__grid && window.__grid()
+      const ranges = g && g.modules.selectRange
+      const active = ranges && ranges.activeRange
+      if (!active) return ''
+      const bounds = active.getBounds()
+      if (!bounds.start) return ''
+      return bounds.start.row.getData()._i + ':' + bounds.start.column.getField()
+    })()"
+
+    t.check "a cell can be picked out", (t.wait_until -> (where!) == "2:c2"),
+      tostring where!
+
+    press = (key, shift) -> window\exec_js "window.__grid().element
+      .dispatchEvent(new KeyboardEvent('keydown', { key: '#{key}',
+        shiftKey: #{shift and "true" or "false"}, bubbles: true }))"
+
+    press "ArrowDown"
+    t.check "an arrow moves to the cell below",
+      (t.wait_until -> (where!) == "3:c2"), tostring where!
+
+    press "ArrowLeft"
+    t.check "and another to the one beside it",
+      (t.wait_until -> (where!) == "3:c1"), tostring where!
+
+    press "ArrowUp"
+    press "ArrowRight"
+    t.check "and back again", (t.wait_until -> (where!) == "2:c2"), tostring where!
+
+    -- Shift extends the selection rather than moving it, which is the other
+    -- half of what a block of cells is selected with.
+    press "ArrowDown", true
+    press "ArrowDown", true
+
+    span = -> window\eval "(() => {
+      const g = window.__grid && window.__grid()
+      const active = g && g.modules.selectRange && g.modules.selectRange.activeRange
+      return active ? active.getRows().length : 0
+    })()"
+
+    t.check "and holding shift extends the block instead of moving it",
+      (t.wait_until -> (span!) == 3), tostring span!
+
+    -- Tabulator fills a selected range with its own blue, which is the one
+    -- colour this interface does not have. Asserted as channels rather than
+    -- as the exact mix: what matters is that it reads amber and washes rather
+    -- than covers, not that it is one particular percentage.
+    fill = channels '.tabulator-cell.tabulator-range-selected', 'backgroundColor'
+    red, _, blue, alpha = fill\match "^(%d+),(%d+),(%d+),([%d%.]+)$"
+
+    t.check "the selected block is an amber wash, not the library's blue fill",
+      red != nil and (tonumber(red) > tonumber blue) and (tonumber(alpha) < 1),
+      fill
+
+    t.check "and nothing has gone white under the selection", white! == "", white!
+
+    -- Enter commits and moves down, which is what makes a column of numbers
+    -- typeable without reaching for the mouse between each one.
+    window\exec_js "(() => {
+      const g = window.__grid()
+      g.addRange(g.getRow(4).getCell('c2'))
+      const el = g.getRow(4).getCell('c2').getElement()
+      el.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
+      const input = el.querySelector('input')
+      input.value = 'Sac au clavier'
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    })()"
+
+    t.check "Enter commits what was typed",
+      (t.wait_until -> (value_at 4, 2) == "Sac au clavier"), value_at 4, 2
+
+    t.check "and moves to the row below",
+      (t.wait_until -> (where!) == "5:c2"), tostring where!
 
     t.section "The Lua panel"
 
@@ -1093,78 +1627,296 @@ app\on "ready", ->
     -- 170 cells to a Spell record: 234 words, of which four sets of seventeen
     -- are the localised columns, each of them one cell at one locale.
     t.check "with a column for every value in a record",
-      (window\eval "nui.get('dbc_grid').total_cols") == 170,
-      tostring window\eval "nui.get('dbc_grid').total_cols"
+      (window\eval "nui.get('dbc_columns').length") == 170,
+      tostring window\eval "nui.get('dbc_columns').length"
 
-    t.check "and the scroller is the size of all two thousand rows",
-      (window\eval "Math.round(document.querySelector('.dbc-scroller')
-        .firstElementChild.getBoundingClientRect().height)") == 2000 * 22 + 26,
-      tostring window\eval "Math.round(document.querySelector('.dbc-scroller')
-        .firstElementChild.getBoundingClientRect().height)"
+    -- One page, not two thousand rows. This is the whole design: the library
+    -- wants every row it will ever show, and Spell in a real client is 49,839
+    -- by 105 - five million values that cannot be handed over at all.
+    t.check "and it holds one page of them rather than all two thousand",
+      (t.wait_until -> held! == 200), "#{held!} held :: #{why!}"
 
-    -- Opening asks the page to put the grid back at the top, one frame
-    -- later. Scrolling before that has happened is a scroll the reset then
-    -- undoes - so wait for it, rather than racing it.
-    t.wait_until -> (window\eval "document.querySelector('.dbc-scroller').scrollTop") == 0
+    t.check "which is drawn", showing!, why!
 
-    -- The point of the whole arrangement: what is drawn is bounded by the
-    -- window, not by the table. 2000 rows of 234 columns is 468,000 cells.
-    drawn = window\eval "document.querySelectorAll('.dbc-cell').length"
-    t.check "but only a window of cells is drawn", drawn > 0 and drawn <= 64 * 16,
-      "#{drawn} cells"
+    -- The point of the whole arrangement. 2000 rows of 170 columns is 340,000
+    -- cells, and what is drawn has to be bounded by the window rather than by
+    -- the table - columns as well as rows.
+    t.check "and draws a window of cells rather than a table of them",
+      (drawn! > 0) and (drawn! < 2000), "#{drawn!} drawn :: #{why!}"
 
-    t.check "and a window of headers with them",
-      (window\eval "document.querySelectorAll('.dbc-head').length") <= 16,
-      tostring window\eval "document.querySelectorAll('.dbc-head').length"
+    -- In the document too, and not only on screen. The library keeps a buffer
+    -- around what is visible in both directions; what matters is that it is a
+    -- buffer rather than the table.
+    in_document = elements!
+    t.check "with a buffer around it rather than the whole table",
+      (in_document > 0) and (in_document < 5000), "#{in_document} elements"
 
-    window\exec_js "document.querySelector('.dbc-scroller').scrollTop = 1000 * 22"
+    -- Scrolled to the bottom of what has arrived, the next page is asked for
+    -- and appended. This is the check that the progressive model works at all.
+    scroller = "document.querySelector('.dbc-grid .tabulator-tableholder')"
+    window\exec_js "#{scroller}.scrollTop = #{scroller}.scrollHeight"
 
-    t.check "scrolling down asks for the rows that came into view",
-      (t.wait_until -> (window\eval "nui.get('dbc_grid').row") == 1000 - 6),
-      tostring window\eval "nui.get('dbc_grid').row"
+    t.check "scrolling to the end asks for the next page",
+      (t.wait_until -> held! > 200), "#{held!} held :: #{why!}"
 
-    t.check "which are the rows it draws",
-      (window\eval "nui.get('dbc_grid').rows[0].index") == 995,
-      tostring window\eval "nui.get('dbc_grid').rows[0].index"
+    t.check "which is appended rather than replacing what was there",
+      (window\eval "window.__grid().getRow(1) ? 1 : 0") == 1
 
-    t.check "and the block is put where those rows belong",
-      (window\eval "document.querySelector('.dbc-cell')
-        .getBoundingClientRect().top") > 0
+    t.check "and the window of cells is still bounded",
+      (drawn! > 0) and (drawn! < 2000), "#{drawn!} drawn :: #{why!}"
 
-    t.check "with no more of it drawn than before",
-      (window\eval "document.querySelectorAll('.dbc-cell').length") <= 64 * 16
+    t.check "with no more in the document than before it grew",
+      elements! <= in_document * 2, "#{elements!} against #{in_document}"
 
-    window\exec_js "document.querySelector('.dbc-scroller').scrollLeft = 100 * 150"
+    -- Sorting is Lua's, over the whole table rather than over the pages that
+    -- happen to have arrived. Row 2000 cannot be at the top of a descending
+    -- sort unless something outside the library did the ordering.
+    window\exec_js "window.__grid().setSort([{ column: 'c1', dir: 'desc' }])"
 
-    t.check "scrolling sideways asks for those columns",
-      (t.wait_until -> (window\eval "nui.get('dbc_grid').col") == 99),
-      tostring window\eval "nui.get('dbc_grid').col"
+    t.check "sorting reaches past what the grid holds",
+      (t.wait_until -> (window\eval "(() => {
+        const g = window.__grid()
+        const rows = g.getRows()
+        return rows.length ? rows[0].getData()._i : 0
+      })()") == 2000),
+      tostring window\eval "(() => {
+        const g = window.__grid()
+        const rows = g.getRows()
+        return rows.length ? rows[0].getData()._i : 0
+      })()"
 
-    t.check "and the header follows them",
-      (window\eval "document.querySelector('.dbc-head').innerText")\match("%S") != nil,
-      window\eval "document.querySelector('.dbc-head').innerText"
+    t.check "and reading again starts from one page once more",
+      (t.wait_until -> (held! > 0) and (held! <= 400)), "#{held!} held"
 
-    -- To the other long table, deliberately: this is the check that a reset
-    -- doing nothing would still pass if the table it moved to were short.
-    window\exec_js "document.querySelector('.dbc-scroller').scrollTop = 900 * 22"
-    t.wait_until -> (window\eval "nui.get('dbc_grid').row") > 0
+    window\exec_js "window.__grid().clearSort()"
+    t.wait_until -> (window\eval "(() => {
+      const rows = window.__grid().getRows()
+      return rows.length ? rows[0].getData()._i : 0
+    })()") == 1
 
+    -- To the other long table, deliberately: a grid that failed to start over
+    -- would still look right if the table it moved to were short.
     window\exec_js "[...document.querySelectorAll('.dbc-table')]
       .find(el => el.innerText.trim() === 'SpellIcon').click()"
     t.wait_until -> (window\eval "nui.get('dbc_open')") == "SpellIcon"
 
-    t.check "opening another long table puts the scrollbar back at its top",
-      (t.wait_until -> (window\eval "document.querySelector('.dbc-scroller').scrollTop") == 0),
-      tostring window\eval "document.querySelector('.dbc-scroller').scrollTop"
+    t.check "opening another long table starts it at the first row",
+      (t.wait_until -> (window\eval "(() => {
+        const g = window.__grid && window.__grid()
+        const rows = g ? g.getRows() : []
+        return rows.length ? rows[0].getData()._i : 0
+      })()") == 1),
+      why!
 
-    t.check "and the grid is drawing that table's first rows",
-      (t.wait_until -> (window\eval "nui.get('dbc_grid').row") == 0),
-      tostring window\eval "nui.get('dbc_grid').row"
+    t.check "and puts the scrollbar back at the top",
+      (window\eval "#{scroller}.scrollTop") == 0,
+      tostring window\eval "#{scroller}.scrollTop"
 
     -- Back to the small table for what follows.
     window\exec_js "[...document.querySelectorAll('.dbc-table')]
       .find(el => el.innerText.trim() === 'ItemBagFamily').click()"
     t.wait_until -> (window\eval "nui.get('dbc_open')") == "ItemBagFamily"
+    showing!
+
+    t.section "Pasting a block in"
+
+    -- DBC work is bulk work: a column copied out of a spreadsheet and dropped
+    -- into the grid. The clipboard is not something a browser will hand a
+    -- test, so the event is built here - but the listener, the parser and the
+    -- action that run are the real ones.
+
+    paste = (text) -> window\exec_js "(() => {
+      const data = new DataTransfer()
+      data.setData('text/plain', #{json.encode text})
+      window.__grid().element.dispatchEvent(new ClipboardEvent('paste', {
+        clipboardData: data, bubbles: true, cancelable: true }))
+    })()"
+
+    undo_depth = -> window\eval "nui.get('can_undo')"
+
+    -- Read rather than assumed: the sections above have been editing this
+    -- table, so what the rows hold now is a fact and not a fixture.
+    was_pasted = [value_at index, 2 for index = 1, 3]
+
+    window\exec_js "(() => {
+      const g = window.__grid()
+      g.addRange(g.getRow(1).getCell('c2'))
+    })()"
+
+    paste "Sac colle 1\nSac colle 2\nSac colle 3"
+
+    t.check "a pasted column lands in the rows below the one selected",
+      (t.wait_until -> (value_at 3, 2) == "Sac colle 3"), value_at 3, 2
+
+    -- Read straight out of the record, through a session of the suite's own.
+    -- A paste that had only updated the library's copy of the row would look
+    -- exactly like one that reached the file.
+    in_record = editor.session (library.open "ItemBagFamily"), "ItemBagFamily",
+      "frFR", BUILD, "present"
+
+    t.check "and reaches the record rather than the grid's own copy",
+      (editor.read in_record, 2, in_record.columns[2]) == "Sac colle 2",
+      editor.read in_record, 2, in_record.columns[2]
+
+    t.check "every pasted cell is marked as changed",
+      (t.wait_until -> marked! >= 3), tostring marked!
+
+    t.check "and the shell has something to undo", undo_depth! == true
+
+    -- The design question the whole feature turns on: two hundred presses of
+    -- Ctrl+Z to take back one paste would be unusable.
+    window\exec_js "neutrino.invoke('shell:undo')"
+
+    t.check "one undo takes the whole paste back",
+      (t.wait_until -> (value_at 3, 2) == was_pasted[3]),
+      "#{value_at 3, 2} against #{was_pasted[3]}"
+
+    t.check "all of it, not the last cell of it",
+      (value_at 1, 2) == was_pasted[1] and (value_at 2, 2) == was_pasted[2],
+      "#{value_at 1, 2}, #{value_at 2, 2}"
+
+    -- A cell the column will not take keeps its text and says why, exactly as
+    -- a typed edit does - and the ones around it still go in.
+    window\exec_js "[...document.querySelectorAll('.dbc-table')]
+      .find(el => el.innerText.trim() === 'WorldSafeLocs').click()"
+    t.wait_until -> (window\eval "nui.get('dbc_open')") == "WorldSafeLocs"
+    showing!
+
+    window\exec_js "(() => {
+      const g = window.__grid()
+      g.addRange(g.getRow(1).getCell('c2'))
+    })()"
+
+    paste "61\nrubbish\n63"
+
+    t.check "a refused cell in a paste keeps its text",
+      (t.wait_until -> (value_at 2, 2) == "rubbish"), value_at 2, 2
+
+    t.check "while the cells around it go in",
+      (value_at 1, 2) == "61" and (value_at 3, 2) == "63",
+      "#{value_at 1, 2}, #{value_at 3, 2}"
+
+    t.check "and the strip says how many were refused",
+      (window\eval "nui.get('dbc_message')")\match("refused") != nil,
+      tostring window\eval "nui.get('dbc_message')"
+
+    window\exec_js "neutrino.invoke('shell:undo')"
+
+    t.section "Choosing the columns"
+
+    window\exec_js "[...document.querySelectorAll('.dbc-table')]
+      .find(el => el.innerText.trim() === 'Spell').click()"
+    t.wait_until -> (window\eval "nui.get('dbc_open')") == "Spell"
+    showing!
+
+    -- Read off the store rather than written here: which column is which is
+    -- the definition's business, and a suite that named them would be a
+    -- second copy of the definition.
+    label_of = (index) -> window\eval "nui.get('dbc_columns').find(c => c.index === #{index}).label"
+
+    -- Not "the store says it is hidden": the header has to be gone from the
+    -- grid, and the values have to stop arriving.
+    on_header = (label) -> window\eval "[...document.querySelectorAll(
+      '.dbc-grid .tabulator-col-title')].some(el => el.textContent.trim() === #{json.encode label})"
+
+    -- Which column is leftmost, ignoring the frozen row number.
+    leftmost = -> window\eval "(() => {
+      const g = window.__grid && window.__grid()
+      const columns = g ? g.getColumns().filter(c => (c.getField() || '').charAt(0) === 'c') : []
+      return columns.length ? columns[0].getField() : ''
+    })()"
+
+    second = label_of 2
+
+    t.check "the column list offers every column there is",
+      (window\eval "nui.get('dbc_columns').length") == 170,
+      tostring window\eval "nui.get('dbc_columns').length"
+
+    t.check "and the second of them is on the header to begin with",
+      on_header(second) == true, second
+
+    columns_drawn = -> window\eval "document.querySelectorAll(
+      '.dbc-grid .tabulator-col[tabulator-field]').length"
+
+    -- Settled, not caught mid-rebuild. Hiding a column throws the grid away
+    -- and builds another, and for a frame in between there are no headers at
+    -- all - which would make "the header is gone" true for the wrong reason.
+    settled = -> (matches_store! == 1) and (drawn! > 0)
+
+    window\exec_js "neutrino.invoke('dbc:columns', { column: 2, shown: false })"
+
+    t.check "hiding one gives a grid with one column fewer",
+      (t.wait_until -> settled! and columns_drawn! == 170),
+      "#{columns_drawn!} columns :: #{why!}"
+
+    t.check "and its header is not on it", on_header(second) == false, second
+
+    t.check "and stops its values being read at all",
+      (t.wait_until -> (window\eval "(() => {
+        const g = window.__grid && window.__grid()
+        const row = g && g.getRow(1)
+        return row && row.getData().c2 === undefined ? 1 : 0
+      })()") == 1),
+      tostring window\eval "(() => {
+        const g = window.__grid && window.__grid()
+        const row = g && g.getRow(1)
+        return row ? String(row.getData().c2) : 'no row'
+      })()"
+
+    window\exec_js "neutrino.invoke('dbc:columns', { every: false })"
+    t.check "and hiding all of them leaves a grid with no columns",
+      (t.wait_until -> columns_drawn! == 0), tostring columns_drawn!
+
+    window\exec_js "neutrino.invoke('dbc:columns', { every: true })"
+    t.check "while showing all of them puts every one back",
+      (t.wait_until -> on_header(second) == true), second
+
+    -- The order lives on the session beside the widths, and moving a column
+    -- moves it in the grid rather than only in the list.
+    t.check "the first column is the first one to begin with",
+      (t.wait_until -> (leftmost!) == "c1"), tostring leftmost!
+
+    window\exec_js "neutrino.invoke('dbc:columns', { order: [3, 2, 1] })"
+    t.check "reordering moves the columns the grid draws",
+      (t.wait_until -> (leftmost!) == "c3"), tostring leftmost!
+
+    window\exec_js "neutrino.invoke('dbc:columns', { order: [1, 2, 3] })"
+    t.wait_until -> (leftmost!) == "c1"
+
+    t.section "The changed rows on their own"
+
+    -- What you want in front of you before saving. On CharBaseInfo, which
+    -- nothing above has edited through the interface - and which keeps no ID
+    -- in its records, so a row here is its position and nothing else.
+    window\exec_js "[...document.querySelectorAll('.dbc-table')]
+      .find(el => el.innerText.trim() === 'CharBaseInfo').click()"
+    t.wait_until -> (window\eval "nui.get('dbc_open')") == "CharBaseInfo"
+    showing!
+
+    rows_drawn = -> window\eval "document.querySelectorAll('.dbc-grid .tabulator-row').length"
+
+    t.check "every row is there to begin with", (t.wait_until -> rows_drawn! == 4),
+      "#{rows_drawn!} rows :: #{why!}"
+
+    type_into 2, 1, "9"
+    t.check "and an edit reaches the record",
+      (t.wait_until -> (value_at 2, 1) == "9"), value_at 2, 1
+
+    window\exec_js "neutrino.invoke('dbc:changed-only')"
+
+    t.check "the view narrows to the rows this session has changed",
+      (t.wait_until -> rows_drawn! == 1), "#{rows_drawn!} rows :: #{why!}"
+
+    t.check "and it is that row",
+      (window\eval "window.__grid().getRows()[0].getData()._i") == 2,
+      tostring window\eval "window.__grid().getRows()[0].getData()._i"
+
+    t.check "with the strip saying the view is on",
+      (window\eval "nui.get('dbc_changed_only')") == true
+
+    window\exec_js "neutrino.invoke('dbc:changed-only')"
+    t.check "and turning it off brings the rest back",
+      (t.wait_until -> rows_drawn! == 4), tostring rows_drawn!
 
     t.section "The relations graph"
 

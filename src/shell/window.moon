@@ -85,7 +85,10 @@ M.mount = (app, server) ->
     res\html ui.document {
       title: "WowLabs"
       lang: "en"
-      head: '<link rel="stylesheet" href="neutrino://app/assets/app.css">'
+      -- The tools' own first: a vendored stylesheet and ours have rules of the
+      -- same specificity, and the one that comes last wins.
+      head: tools.head! ..
+        '<link rel="stylesheet" href="neutrino://app/assets/app.css">'
       state: initial_state!
       body: page.render!
     }

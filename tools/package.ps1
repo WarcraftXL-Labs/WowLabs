@@ -89,6 +89,8 @@ $required = @(
     "app\modules\dbc\init.lua",
     "app\modules\dbc\editor.lua",
     "app\modules\dbc\changes.lua",
+    "app\modules\dbc\relations.lua",
+    "app\modules\dbc\query.lua",
     "app\dbc\init.lua",
     "rocks\lib\lua\5.1\cjson.dll",
     "definitions\Spell.json",

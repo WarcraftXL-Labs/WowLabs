@@ -42,6 +42,9 @@ ICONS = {
   undo: '<path d="M3 8.25h7a3 3 0 0 1 0 6H7"/><path d="m5.5 5.5-2.75 2.75L5.5 11"/>'
   redo: '<path d="M13 8.25H6a3 3 0 0 0 0 6h3"/><path d="m10.5 5.5 2.75 2.75L10.5 11"/>'
   save: '<path d="M3.75 2.75h6.5l3 3v7.5a1 1 0 0 1-1 1h-8.5a1 1 0 0 1-1-1v-9.5a1 1 0 0 1 1-1Z"/><path d="M5.25 2.75v4h5.5v-4M5.25 13.25v-3.5h5.5v3.5"/>'
+  eye: '<path d="M1.75 8S4.25 3.75 8 3.75 14.25 8 14.25 8 11.75 12.25 8 12.25 1.75 8 1.75 8Z"/><circle cx="8" cy="8" r="1.75"/>'
+  "eye-off": '<path d="M2.5 6.25S4.5 10.25 8 10.25s5.5-4 5.5-4"/><path d="m4 9.5-1.25 1.75M8 10.25v2M12 9.5l1.25 1.75"/>'
+  link: '<path d="M6.75 9.25a2.5 2.5 0 0 0 3.54 0l2-2a2.5 2.5 0 0 0-3.54-3.54l-.75.75"/><path d="M9.25 6.75a2.5 2.5 0 0 0-3.54 0l-2 2a2.5 2.5 0 0 0 3.54 3.54l.75-.75"/>'
   chevron: '<path d="m4.5 6.25 3.5 3.5 3.5-3.5"/>'
   minimize: '<path d="M3 8h10"/>'
   maximize: '<rect x="3.5" y="3.5" width="9" height="9" rx="1"/>'
@@ -174,15 +177,31 @@ SOURCE = [==[
         <div class="flex w-full flex-col items-center"
              data-show="tool === '<%= entry.id %>'">
           <% for _, action in ipairs(entry.actions) do %>
-            <!-- An action may be one this tool cannot always offer. A button
-                 that is there and refuses is worse than one that is not: the
-                 refusal has to be read, and by then it has been clicked. -->
-            <button type="button" class="action-button group"
-                    <% if action.shown then %>data-show="<%= action.shown %>"<% end %>
-                    data-on-click="<%= action.action %>">
-              <%- icon(action.icon or "settings", 17) %>
-              <span class="surface-float tip tip-right"><%= action.title %></span>
-            </button>
+            <% if action.separator then %>
+              <!-- A rule between two kinds of action: the ones that change the
+                   table, and the ones that only answer questions about it. -->
+              <div class="action-rule"></div>
+            <% else %>
+              <!-- An action may be one this tool cannot always offer. A button
+                   that is there and refuses is worse than one that is not: the
+                   refusal has to be read, and by then it has been clicked.
+
+                   `html` is for an action that is a state rather than a doing:
+                   the glyph follows the store, the way the window's own
+                   maximise button does, so the button says which way it is
+                   set without a second mark beside it. -->
+              <button type="button" class="action-button group"
+                      <% if action.shown then %>data-show="<%= action.shown %>"<% end %>
+                      <% if action.active then %>data-class-is-on="<%= action.active %>"<% end %>
+                      data-on-click="<%= action.action %>">
+                <% if action.html then %>
+                  <span data-html="<%= action.html %>"></span>
+                <% else %>
+                  <%- icon(action.icon or "settings", 17) %>
+                <% end %>
+                <span class="surface-float tip tip-right"><%= action.title %></span>
+              </button>
+            <% end %>
           <% end %>
         </div>
       <% end %>

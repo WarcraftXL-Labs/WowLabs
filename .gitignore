@@ -51,5 +51,8 @@ luac.out
 # Fetched at setup: the Tailwind standalone binary
 /tools/bin/
 
+# Fetched at setup: the graph library the relations view draws with
+/vendor/js/
+
 # Generated from static/tailwind.css by the Tailwind CLI
 /static/app.css

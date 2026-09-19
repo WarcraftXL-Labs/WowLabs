@@ -9,7 +9,7 @@
 # Run it after cloning, and after `git submodule update` brings a new Neutrino.
 
 param(
-    [ValidateSet("all", "neutrino", "tailwind")]
+    [ValidateSet("all", "neutrino", "tailwind", "cytoscape")]
     [string]$Only = "all",
 
     # Fetch again even when the file is already there.
@@ -27,6 +27,14 @@ $BinDir = Join-Path $RootDir "tools\bin"
 # system-wide, and it works with no network once it is on disk.
 $TailwindVersion = "v4.3.3"
 $TailwindExe = Join-Path $BinDir "tailwindcss.exe"
+
+# The relations view is a graph, and laying one out, drawing it, and letting
+# somebody pan, zoom and click it is more than a page should carry by hand.
+# Pinned and vendored like everything else: fetched once here, read from disk
+# forever after, and the application never asks the network for it.
+$CytoscapeVersion = "3.30.2"
+$VendorJs = Join-Path $RootDir "vendor\js"
+$CytoscapeFile = Join-Path $VendorJs "cytoscape.min.js"
 
 function Step($message) { Write-Host "[wowlabs] $message" -ForegroundColor Cyan }
 function Note($message) { Write-Host "          $message" -ForegroundColor DarkGray }
@@ -71,6 +79,24 @@ if (Want "tailwind") {
         Invoke-WebRequest -Uri $url -OutFile $TailwindExe -UseBasicParsing
 
         Note "tools\bin\tailwindcss.exe"
+    }
+}
+
+# --- Cytoscape --------------------------------------------------------------
+
+if (Want "cytoscape") {
+    if ((Test-Path $CytoscapeFile) -and -not $Force) {
+        Note "Cytoscape already present"
+    } else {
+        Step "Cytoscape $CytoscapeVersion"
+        New-Item -ItemType Directory -Path $VendorJs -Force | Out-Null
+
+        $url = "https://cdn.jsdelivr.net/npm/cytoscape@$CytoscapeVersion/dist/cytoscape.min.js"
+
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        Invoke-WebRequest -Uri $url -OutFile $CytoscapeFile -UseBasicParsing
+
+        Note "vendor\js\cytoscape.min.js"
     }
 }
 

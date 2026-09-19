@@ -20,7 +20,13 @@ Neutrino = require "neutrino"
 changes = require "modules.dbc.changes"
 editor = require "modules.dbc.editor"
 library = require "modules.dbc.library"
+relations = require "modules.dbc.relations"
 view = require "modules.dbc.view"
+
+-- Read directly for the graph, which is drawn around a table whether or not
+-- one is open: a schema is a question about the definitions, and opening a
+-- session to ask it would open a table nobody asked for.
+dbc = require "dbc"
 
 menus = require "shell.menus"
 page = require "shell.page"
@@ -109,6 +115,204 @@ M.mount = (window, state) ->
         })
       })
 
+      // ── The relations graph ──────────────────────────────────────────────
+      //
+      // Cytoscape, loaded the first time the panel is opened rather than with
+      // the page: it is 365 KB to parse for a view most sessions never open.
+
+      let cytoscapeReady = null
+      let graph = null
+
+      const loadCytoscape = () => {
+        if (cytoscapeReady) return cytoscapeReady
+
+        cytoscapeReady = new Promise((resolve, reject) => {
+          const tag = document.createElement('script')
+          tag.src = 'neutrino://app/assets/cytoscape.min.js'
+          tag.onload = () => resolve(window.cytoscape)
+          tag.onerror = () => reject(new Error('cytoscape.min.js did not load'))
+          document.head.appendChild(tag)
+        })
+
+        return cytoscapeReady
+      }
+
+      // Read off the stylesheet rather than written here, so the graph follows
+      // the theme instead of being a second copy of it that drifts.
+      const token = (name, fallback) => {
+        const value = getComputedStyle(document.documentElement)
+          .getPropertyValue(name).trim()
+        return value || fallback
+      }
+
+      const drawGraph = async () => {
+        const data = nui.get('dbc_graph')
+        const host = document.querySelector('.dbc-canvas')
+        if (!host || !data || data.nodes.length === 0) return
+
+        let cytoscape
+        try { cytoscape = await loadCytoscape() }
+        catch (err) { host.textContent = String(err); return }
+
+        if (graph) { graph.destroy(); graph = null }
+
+        const accent = token('--color-accent', '#d2a15a')
+        const ink = token('--color-ink', '#e8e6e3')
+        const dim = token('--color-ink-dim', '#a8a5a0')
+        const line = token('--color-line', '#2a2a30')
+        const base = token('--color-base-800', '#1c1c22')
+
+        const elements = []
+        for (const node of data.nodes) {
+          elements.push({ data: {
+            id: node.name,
+            label: node.name,
+            focus: node.name === data.focus ? 1 : 0,
+          }})
+        }
+        for (const edge of data.edges) {
+          elements.push({ data: {
+            id: edge.from + '|' + edge.column + '|' + edge.to,
+            source: edge.from, target: edge.to, label: edge.column,
+          }})
+        }
+
+        // The whole client is hundreds of nodes; one table and its neighbours
+        // is a dozen. A force layout reads well at the first size and wastes
+        // the second, where a ring around the focus says "these are its
+        // neighbours" at a glance.
+        const wide = data.focus === ''
+        const layout = wide
+          ? { name: 'cose', animate: false, nodeRepulsion: 9000,
+              idealEdgeLength: 110, nestingFactor: 0.8, gravity: 0.6,
+              numIter: 900, randomize: true }
+          : { name: 'concentric', animate: false, minNodeSpacing: 40,
+              concentric: (n) => n.data('focus') ? 10 : 1,
+              levelWidth: () => 1 }
+
+        graph = cytoscape({
+          container: host,
+          elements,
+          layout,
+          minZoom: 0.15,
+          maxZoom: 3,
+          wheelSensitivity: 0.25,
+          style: [
+            { selector: 'node', style: {
+              'background-color': base,
+              'border-width': 1,
+              'border-color': line,
+              'shape': 'round-rectangle',
+              'width': 'label', 'height': 18,
+              'padding': '7px',
+              'label': 'data(label)',
+              'color': dim,
+              'font-size': wide ? 9 : 11,
+              'font-family': 'Inter, system-ui, sans-serif',
+              'text-valign': 'center', 'text-halign': 'center',
+            }},
+            { selector: 'node[focus = 1]', style: {
+              'border-color': accent, 'border-width': 2, 'color': ink,
+              'font-size': 13,
+            }},
+            { selector: 'node:selected', style: { 'border-color': accent, 'color': ink }},
+            { selector: 'edge', style: {
+              'width': 1,
+              'line-color': line,
+              'target-arrow-color': line,
+              'target-arrow-shape': 'triangle',
+              'arrow-scale': 0.7,
+              'curve-style': 'bezier',
+              // Only where there is room to read them. Two hundred column
+              // names over a graph of the whole client is a grey haze.
+              'label': wide ? '' : 'data(label)',
+              'font-size': 9,
+              'color': dim,
+              'text-background-color': base,
+              'text-background-opacity': 0.9,
+              'text-background-padding': 2,
+            }},
+            { selector: 'node.dim, edge.dim', style: { 'opacity': 0.15 }},
+          ],
+        })
+
+        // Hovering a table picks out what it touches. On the whole-client
+        // graph this is the only way to follow one thread through the rest.
+        graph.on('mouseover', 'node', (event) => {
+          const near = event.target.closedNeighborhood()
+          graph.elements().difference(near).addClass('dim')
+        })
+        graph.on('mouseout', 'node', () => graph.elements().removeClass('dim'))
+
+        graph.on('tap', 'node', (event) => {
+          nui.set('dbc_graph_open', false)
+          neutrino.invoke('dbc:open', { name: event.target.id(), pinned: true })
+        })
+
+        graph.on('dbltap', 'node', (event) => {
+          neutrino.invoke('dbc:relations', event.target.id())
+        })
+
+        graph.fit(undefined, 40)
+      }
+
+      // How many nodes the graph actually holds, which is the only way from
+      // outside to tell "the data arrived" from "the picture was drawn".
+      window.__cyNodes = () => (graph ? graph.nodes().length : -1)
+
+      window.dbcGraphFit = () => { if (graph) graph.fit(undefined, 40) }
+      window.dbcGraphLayout = () => {
+        if (!graph) return
+        const wide = nui.get('dbc_graph').focus === ''
+        graph.layout(wide
+          ? { name: 'cose', animate: false, numIter: 900, randomize: true }
+          : { name: 'concentric', animate: false, minNodeSpacing: 40,
+              concentric: (n) => n.data('focus') ? 10 : 1,
+              levelWidth: () => 1 }).run()
+        graph.fit(undefined, 40)
+      }
+
+      // Redrawn whenever the data changes while the panel is open, which is
+      // what makes double-clicking a neighbour re-root the picture.
+      let seenGraph = null
+      nui.effect(() => {
+        const open = nui.get('dbc_graph_open')
+        const data = nui.get('dbc_graph')
+        const mark = open ? JSON.stringify(data) : null
+
+        if (mark === seenGraph) return
+        seenGraph = mark
+
+        if (!open) {
+          if (graph) { graph.destroy(); graph = null }
+          return
+        }
+
+        // After the frame that shows the panel: a container with no size
+        // lays a graph out into a single point.
+        requestAnimationFrame(() => drawGraph())
+      })
+
+      // Opens the list of rows a foreign key could point at, under the cell
+      // being edited. Positioned from the cell's own rectangle: the list has
+      // to be beside the thing it is answering for, and only the page knows
+      // where that ended up after the grid laid itself out.
+      window.dbcPick = (el, row, column, table) => {
+        const box = el.getBoundingClientRect()
+        const pop = document.querySelector('.dbc-choices')
+        if (!pop) return
+
+        nui.set('dbc_picker', { row: row, column: column, table: table, label: '' })
+        neutrino.invoke('dbc:resolve', { column: column, needle: '' })
+
+        // Above the cell when there is no room below it, which on the last
+        // rows of a full window is most of the time.
+        const height = 280
+        const below = window.innerHeight - box.bottom
+        pop.style.left = Math.min(box.left, window.innerWidth - 320) + 'px'
+        pop.style.top = (below < height ? Math.max(8, box.top - height) : box.bottom) + 'px'
+      }
+
       window.dbcResize = (event, column, width) => {
         event.preventDefault()
         event.stopPropagation()
@@ -172,6 +376,8 @@ M.mount = (window, state) ->
     -- Read on every refresh rather than once: the setting can change while
     -- the tool is open, and the list would keep the old behaviour otherwise.
     state\set "dbc_open_on", library.setting "open_on"
+    state\set "dbc_resolver", library.setting "resolver"
+    state\set "dbc_readable", library.setting("readable") and true or false
 
     -- The shell's own keys: the menu entries and their shortcuts are guarded
     -- on these, and the status bar reads the first.
@@ -222,6 +428,7 @@ M.mount = (window, state) ->
         return
 
       session = made
+      session.readable = library.setting "readable"
       sessions[name] = session
 
     active = session
@@ -468,6 +675,101 @@ M.mount = (window, state) ->
     open_table name
     nil
 
+  --- Shows referenced rows by name instead of by number, or stops.
+  --
+  -- One state for the whole tool rather than one per table: it is how somebody
+  -- reads a client, and having to switch it on again for every table opened
+  -- would make it something nobody switches on.
+  window\handle "dbc:readable", ->
+    wanted = not library.setting "readable"
+    library.set "readable", wanted
+
+    session.readable = wanted for _, session in pairs sessions
+    state\set "dbc_readable", wanted
+
+    -- Resolving reads the referenced tables, and the first draw after turning
+    -- it on is when that happens. Said rather than left as a pause.
+    say wanted and "Reading the referenced tables..." or nil
+    refresh!
+    say nil
+    nil
+
+  --- The rows a foreign key could point at, narrowed by what has been typed.
+  window\handle "dbc:resolve", (payload) ->
+    return nil unless active and type(payload) == "table"
+
+    column = column_at payload.column
+    unless column and column.foreign
+      state\set "dbc_choices", json.array {}
+      return nil
+
+    ok, found = pcall relations.search, column.foreign, active.locale,
+      tostring(payload.needle or ""), 60
+
+    unless ok
+      say "#{column.foreign} could not be read: #{tostring found}"
+      state\set "dbc_choices", json.array {}
+      return nil
+
+    state\set "dbc_choices", json.array found
+    nil
+
+  --- The graph of what refers to what.
+  --
+  -- With a table open it is that table and its immediate neighbours, which is
+  -- the question somebody looking at a column has. With none it is every
+  -- linked table in the client, which is the map you want before you know what
+  -- you are looking for.
+  window\handle "dbc:relations", (name) ->
+    build = workspace.setting "build"
+    say "Reading the definitions..."
+
+    -- Which table the picture is drawn around. Re-rooting it on a neighbour
+    -- does not open that table: looking at the shape and working in it are
+    -- different things to want, and one should not drag the other along.
+    focus = type(name) == "string" and name != "" and name or
+      (active and active.name or "")
+
+    nodes, edges = {}, {}
+
+    if focus != ""
+      -- Whether a neighbour is one this client ships. A definition can name a
+      -- table nobody has, and an edge to nothing is a lie in a picture.
+      known = {}
+      known[entry.name] = entry.editable for entry in *library.tables!
+
+      got, schema = pcall dbc.Schemas.Get, focus, build
+      if got and schema
+        seen = { [focus]: true }
+        table.insert nodes, { name: focus, focus: true }
+
+        for link in *relations.outbound schema
+          continue unless known[link.table]
+          unless seen[link.table]
+            seen[link.table] = true
+            table.insert nodes, { name: link.table }
+          table.insert edges, { from: focus, to: link.table, column: link.column }
+
+        ok, inn = pcall relations.inbound, focus, build
+        if ok
+          for link in *inn
+            unless seen[link.table]
+              seen[link.table] = true
+              table.insert nodes, { name: link.table }
+            table.insert edges, { from: link.table, to: focus, column: link.column }
+    else
+      ok, all_nodes, all_edges = pcall relations.graph, build
+      nodes, edges = (ok and all_nodes or {}), (ok and all_edges or {})
+
+    state\set "dbc_graph", {
+      :focus
+      nodes: json.array nodes
+      edges: json.array edges
+    }
+    state\set "dbc_graph_open", true
+    say nil
+    nil
+
   window\handle "dbc:find", (text) ->
     return nil unless active and active.has_id
 
@@ -689,6 +991,23 @@ M.tool = tools.register {
       title: "Save"
       action: "neutrino.invoke('dbc:save')"
     }
+
+    -- These two answer questions about the table rather than changing it, so
+    -- they are kept apart from the ones that do.
+    { separator: true }
+    {
+      id: "readable"
+      html: "dbc_readable ? dbc_icon_eye : dbc_icon_eye_shut"
+      title: "Show referenced rows by name"
+      action: "neutrino.invoke('dbc:readable')"
+      active: "dbc_readable"
+    }
+    {
+      id: "relations"
+      icon: "link"
+      title: "What this table is linked to"
+      action: "neutrino.invoke('dbc:relations')"
+    }
   }
 
   context: view.context icon
@@ -734,6 +1053,24 @@ M.tool = tools.register {
     -- Bumped whenever the view should return to the top. The page watches it;
     -- the number itself means nothing.
     dbc_top: 0
+
+    -- Referenced ids shown with the row they refer to, and whether a cell
+    -- offers that table's rows when it is edited.
+    dbc_readable: library.setting("readable") and true or false
+
+    -- Two glyphs the rail swaps between, rather than one restyled: an eye that
+    -- is open and an eye that is shut are different shapes.
+    dbc_icon_eye: page.icon "eye"
+    dbc_icon_eye_shut: page.icon "eye-off"
+    dbc_resolver: library.setting "resolver"
+
+    -- The cell being picked for, and what it could be set to.
+    dbc_picker: { row: 0, column: 0, table: "", label: "" }
+    dbc_choices: json.array {}
+
+    -- The tables that refer to each other, and which one is being looked at.
+    dbc_graph: { focus: "", nodes: json.array({}), edges: json.array {} }
+    dbc_graph_open: false
 
     dbc_info: {
       rows: 0, shown: 0, columns: 0, has_id: false, format: "", changes: 0
@@ -811,6 +1148,15 @@ sections.register {
         a row holding two different names."
     }
     {
+      type: "toggle"
+      path: "settings.dbc.resolver"
+      label: "Pick referenced rows from a list"
+      help: "A column like AreaTable.ContinentID refers to another table. With
+        this on, editing one offers that table's rows - 12 (Kalimdor) - instead
+        of a box to type a number into. It reads the referenced table the first
+        time, which is a moment on a large one."
+    }
+    {
       type: "choice"
       path: "settings.dbc.open_on"
       label: "Open a table on"
@@ -829,6 +1175,7 @@ sections.register {
     save_as: library.setting "save_as"
     locales: library.setting "locales"
     locale_hint: library.setting "locale_hint"
+    resolver: library.setting "resolver"
     open_on: library.setting "open_on"
   }
 
@@ -842,6 +1189,7 @@ sections.register {
     library.set "save_as", values.save_as == "lua" and "lua" or "dbc"
     library.set "locales", LOCALE_MODES[values.locales] and values.locales or "present"
     library.set "locale_hint", values.locale_hint and true or false
+    library.set "resolver", values.resolver and true or false
     library.set "open_on", values.open_on == "double" and "double" or "single"
 
     -- The folder moving means a different set of files, so what is open

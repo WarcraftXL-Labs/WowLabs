@@ -32,6 +32,7 @@ ffi = require "ffi"
 Neutrino = require "neutrino"
 changes = require "modules.dbc.changes"
 query = require "modules.dbc.query"
+relations = require "modules.dbc.relations"
 
 fs = Neutrino.fs
 json = Neutrino.json
@@ -123,6 +124,7 @@ M.columns = (schema, locale, slots) ->
           extra: index
           offset: field.offset + (index - 1) * field.width
           width: field.width
+          foreign: field.foreign_table
           is_id: false
         }
     elseif field.kind == "loc" and spread
@@ -146,6 +148,11 @@ M.columns = (schema, locale, slots) ->
         offset: field.offset
         width: field.width
         locale: field.kind == "loc" and locale or nil
+
+        -- Which table this refers to, when it refers to one. Read straight
+        -- off the definition, so nothing here is a list somebody maintains.
+        foreign: (field.kind != "str" and field.kind != "loc") and
+          field.foreign_table or nil
 
         -- Only when the ID is really in the record: on the 22 tables where it
         -- is not, the column marked isID describes the ordinal and there is
@@ -309,6 +316,16 @@ shown = (kind, value) ->
   return string.format "%d", value if value == math.floor value
   string.format "%.9g", value
 
+--- Names a referenced row, and gives up quietly.
+--
+-- Through pcall because this reads another file: a definition can name a table
+-- the client does not ship, and a cell that could not be resolved should show
+-- its number rather than take the grid down.
+---@private
+pcall_describe = (name, locale, id) ->
+  ok, text = pcall relations.describe, name, locale, id
+  ok and text or nil
+
 --- Reads one cell.
 ---@param session table
 ---@param index integer 1-based row index.
@@ -321,6 +338,13 @@ M.read = (session, index, column) ->
 
   read, value = pcall row.GetField, row, column.field, column.extra
   return "", tostring value unless read
+
+  -- With names on, a column that refers to another table reads as the row it
+  -- refers to. Only for showing: what goes back into the record is the id,
+  -- and `parse` takes the name off again.
+  if session.readable and column.foreign and type(value) == "number"
+    named = pcall_describe column.foreign, session.locale, value
+    return named, nil if named
 
   (shown column.kind, value), nil
 
@@ -578,6 +602,10 @@ M.window = (session, first_row, first_col, row_count, col_count) ->
       index: at
       w: M.width_of session, at
       sorted: at == sorted and (session.sort.descending and "desc" or "asc") or nil
+
+      -- The page needs this to know which cells can offer a list of rows to
+      -- pick from, and which are just numbers.
+      foreign: column.foreign
     }
 
   rows = {}
@@ -637,6 +665,13 @@ M.window = (session, first_row, first_col, row_count, col_count) ->
 ---@return any value, string|nil err
 M.parse = (column, text) ->
   text = tostring text
+
+  -- "12 (Kalimdor)" came out of a cell with names on, so it has to go back in
+  -- the same shape it left. Stripped rather than refused: the alternative is a
+  -- grid where every cell you touch has to be retyped from scratch.
+  if column.foreign
+    number = text\match "^%s*(%-?%d+)%s*%b()%s*$"
+    text = number if number
 
   switch column.kind
     when "str", "loc"

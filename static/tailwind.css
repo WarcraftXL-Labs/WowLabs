@@ -270,6 +270,11 @@
     @apply bg-base-800 text-ink;
   }
 
+  /* An action that is a state rather than a doing, while it is on. */
+  .action-button.is-on {
+    @apply bg-base-750 text-accent;
+  }
+
   /* ── The table editor ────────────────────────────────────────────────────
      A grid of forty thousand rows repeats by definition, and every one of
      these is drawn once per visible cell. They are also the one place in the
@@ -439,6 +444,51 @@
 
   .dbc-chip:hover {
     @apply border-base-600 text-ink;
+  }
+
+  /* Between two kinds of rail action: the ones that change the table and the
+     ones that only answer questions about it. */
+  .action-rule {
+    @apply my-1.5 h-px w-6 shrink-0 bg-line;
+  }
+
+  /* A cell that refers to another table. Underlined rather than coloured,
+     because colour in this grid already means "changed" and "refused". */
+  .dbc-cell.is-link {
+    text-decoration: underline;
+    text-decoration-style: dotted;
+    text-underline-offset: 3px;
+    @apply decoration-base-600;
+  }
+
+  /* The list of rows a foreign key could point at. Fixed, and placed from the
+     cell's rectangle: it belongs beside what it is answering for. */
+  .dbc-choices {
+    @apply fixed z-50 w-[300px] overflow-hidden rounded;
+  }
+
+  .dbc-choice {
+    @apply flex w-full items-center gap-2 px-2 py-1 text-left text-[12px]
+           text-ink-dim transition-colors duration-75;
+  }
+
+  .dbc-choice:hover {
+    @apply bg-base-750 text-ink;
+  }
+
+  .dbc-choice-id {
+    @apply w-12 shrink-0 text-right font-mono text-[11px] text-accent;
+  }
+
+  /* Where the relations graph is drawn. Cytoscape measures its container, so
+     this has to have a size before the graph is laid out into it. */
+  .dbc-canvas {
+    @apply absolute inset-0 bg-base-950;
+  }
+
+  .dbc-graph-empty {
+    @apply absolute inset-0 grid place-items-center px-16 text-center
+           text-[12.5px] leading-relaxed text-ink-faint;
   }
 
   .dbc-help-button {

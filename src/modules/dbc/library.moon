@@ -55,6 +55,18 @@ M.DEFAULTS = {
   -- when that is not the workspace's.
   locale_hint: true
 
+  -- Show a referenced id with the row it points at beside it. Persisted, so
+  -- it survives opening another table and restarting: it is how somebody
+  -- reads a client, not a thing to switch on per file. Changed from the rail
+  -- rather than the settings page, which is why it is not a field there.
+  readable: false
+
+  -- Offer the rows of the referenced table when a foreign key is being
+  -- edited, instead of a box to type a number into. Off by default: it reads
+  -- the referenced table to build the list, and somebody who knows the number
+  -- they want is slowed down rather than helped.
+  resolver: false
+
   -- Whether a click opens a table or only selects it. Double is for people
   -- who move through the list with the keyboard and do not want a fifty
   -- thousand row table opened at every step.

@@ -91,6 +91,14 @@ write_fixture "SpellIcon", (tbl) ->
   for id = 1, 2000
     tbl\Create id
 
+-- What WorldSafeLocs.Continent refers to, so the links between tables can be
+-- followed rather than only listed.
+write_fixture "Map", (tbl) ->
+  for id, name in ipairs { "Azeroth", "Kalimdor", "Outland" }
+    row = tbl\Create id
+    row\SetField "Directory", name
+    row\SetField "MapName_lang", name, "enUS"
+
 -- Not a table at all. A client folder has files in it that no definition
 -- describes, and the list has to survive them.
 fs.write "#{source}/NotATable.dbc", "rubbish"
@@ -106,7 +114,7 @@ entries = library.tables!
 by_name = {}
 by_name[entry.name] = entry for entry in *entries
 
-t.check "the folder is listed", #entries == 6, "#{#entries} entries"
+t.check "the folder is listed", #entries == 7, "#{#entries} entries"
 t.check "and in a stable order", entries[1].name == "CharBaseInfo",
   entries[1].name
 
@@ -707,6 +715,135 @@ t.check "and does not answer for a language it was not given",
 
 editor.set_query spread, ""
 
+-- ═══════════════════════════════════════════════════════════════════════════
+
+t.section "What points at what"
+
+relations = require "modules.dbc.relations"
+
+locs_schema = locs.schema
+links = relations.outbound locs_schema
+
+t.check "a column that refers to another table is found",
+  #[link for link in *links when link.table == "Map"] == 1,
+  "#{#links} links"
+
+map_schema = (library.open "Map")\GetSchema!
+t.check "a row is named by its localised column",
+  (relations.label_field map_schema).name == "MapName_lang",
+  (relations.label_field map_schema).name
+
+-- CharBaseInfo is two numbers and nothing else, which is what a table with
+-- no name to show looks like. Spell has Name_lang and would have one.
+t.check "a table of numbers has nothing to name a row by",
+  (relations.label_field (library.open "CharBaseInfo")\GetSchema!) == nil
+
+-- ═══════════════════════════════════════════════════════════════════════════
+
+t.section "Saying a referenced row out loud"
+
+t.check "an id reads as itself and the row it points at",
+  (relations.describe "Map", "enUS", 2) == "2 (Kalimdor)",
+  relations.describe "Map", "enUS", 2
+
+-- Nearly every column that refers to anything uses 0 for "nothing", so it is
+-- named rather than looked up and missed.
+t.check "zero means nothing rather than a missing row",
+  (relations.describe "Map", "enUS", 0) == "0",
+  relations.describe "Map", "enUS", 0
+
+t.check "an id that is not there says so rather than inventing one",
+  (relations.describe "Map", "enUS", 99) == "99 (?)",
+  relations.describe "Map", "enUS", 99
+
+t.check "a table that cannot be read falls back to the number",
+  (relations.describe "Nonexistent", "enUS", 4) == "4",
+  relations.describe "Nonexistent", "enUS", 4
+
+found = relations.search "Map", "enUS", "kalim"
+t.check "searching by name narrows the list", #found == 1 and found[1].id == 2,
+  "#{#found} matches"
+t.check "and each match reads the way the cell will",
+  found[1].text == "2 (Kalimdor)", found[1].text
+
+by_number = relations.search "Map", "enUS", "3"
+t.check "searching by id puts the exact one first",
+  by_number[1].id == 3, tostring by_number[1] and by_number[1].id
+
+t.check "an empty search offers everything there is",
+  #(relations.search "Map", "enUS", "") == 3
+
+t.check "and a cap is a cap", #(relations.search "Map", "enUS", "", 2) == 2
+
+-- Reading every definition is the only way round: nothing indexes the links
+-- backwards, so this is the slow one and it is slow once.
+back = relations.inbound "Map", BUILD
+t.check "the tables pointing at one are found",
+  #[link for link in *back when link.table == "WorldSafeLocs"] == 1,
+  "#{#back} referrers"
+
+-- ═══════════════════════════════════════════════════════════════════════════
+
+t.section "The whole picture"
+
+graph_nodes, graph_edges = relations.graph BUILD
+named = {}
+named[node.name] = node.links for node in *graph_nodes
+
+t.check "both ends of a link are nodes",
+  named.WorldSafeLocs != nil and named.Map != nil,
+  table.concat [node.name for node in *graph_nodes], ", "
+
+continent_edges = 0
+for edge in *graph_edges
+  if edge.from == "WorldSafeLocs" and edge.to == "Map" and edge.column == "Continent"
+    continent_edges += 1
+
+t.check "and the link between them is an edge", continent_edges == 1,
+  "#{continent_edges} of #{#graph_edges} edges"
+
+-- A link to a table the client does not have is a line to nothing. The
+-- definitions name plenty of those; the picture should not.
+t.check "a link to a table this client does not ship is left out",
+  #[edge for edge in *graph_edges when named[edge.to] == nil] == 0
+
+t.check "and a table with no links at all is not a dot in the corner",
+  named.ItemBagFamily == nil
+
+t.check "a node counts what touches it", named.Map >= 1, tostring named.Map
+
+-- ═══════════════════════════════════════════════════════════════════════════
+
+t.section "Showing names in the grid"
+
+readable = editor.session (library.open "WorldSafeLocs"), "WorldSafeLocs",
+  "enUS", BUILD
+continent = nil
+continent = column for column in *readable.columns when column.field == "Continent"
+
+t.check "a foreign key column knows what it refers to",
+  continent.foreign == "Map", tostring continent.foreign
+
+-- Row 1's Continent is 10 in the fixture, which is no map at all - so this
+-- also checks the fallback rather than only the happy path.
+editor.set_cell readable, 1, continent, "2"
+t.check "with names off a cell is its number",
+  (editor.read readable, 1, continent) == "2",
+  editor.read readable, 1, continent
+
+readable.readable = true
+t.check "and with them on it is the row it points at",
+  (editor.read readable, 1, continent) == "2 (Kalimdor)",
+  editor.read readable, 1, continent
+
+-- What comes out of the cell has to go back into it, or every cell touched
+-- while names are on would have to be retyped from scratch.
+value, err = editor.parse continent, "3 (Outland)"
+t.check "and what it shows can be typed straight back", value == 3, tostring err
+
+plain, plain_err = editor.parse continent, "3"
+t.check "as can the number on its own", plain == 3, tostring plain_err
+
 t.load_native!
 
 -- The locale the tool edits comes from the workspace, so this is also what
@@ -746,7 +883,7 @@ app\on "ready", ->
     t.section "The table list"
 
     t.check "the tables are there on the first paint",
-      (window\eval "nui.get('dbc_tables').length") == 6,
+      (window\eval "nui.get('dbc_tables').length") == 7,
       tostring window\eval "nui.get('dbc_tables').length"
 
     -- The list is the page's own filter over the store, so the entries
@@ -757,7 +894,7 @@ app\on "ready", ->
 
     window\exec_js "nui.set('dbc_filter', '')"
     t.check "and clearing it brings the rest back",
-      (t.wait_until -> (window\eval "document.querySelectorAll('.dbc-table').length") == 6)
+      (t.wait_until -> (window\eval "document.querySelectorAll('.dbc-table').length") == 7)
 
     -- A file no definition describes is shown and cannot be clicked. Hiding
     -- it would mean somebody looking for it concluded it was not there.
@@ -1021,10 +1158,49 @@ app\on "ready", ->
       tostring window\eval "document.querySelector('.dbc-scroller').scrollTop"
 
     t.check "and the grid is drawing that table's first rows",
-      (window\eval "nui.get('dbc_grid').row") == 0,
+      (t.wait_until -> (window\eval "nui.get('dbc_grid').row") == 0),
       tostring window\eval "nui.get('dbc_grid').row"
 
     -- Back to the small table for what follows.
+    window\exec_js "[...document.querySelectorAll('.dbc-table')]
+      .find(el => el.innerText.trim() === 'ItemBagFamily').click()"
+    t.wait_until -> (window\eval "nui.get('dbc_open')") == "ItemBagFamily"
+
+    t.section "The relations graph"
+
+    -- The one piece no model test can reach: a graph library, loaded on
+    -- demand, laying out and drawing into a canvas in a real window.
+    window\exec_js "[...document.querySelectorAll('.dbc-table')]
+      .find(el => el.innerText.trim() === 'WorldSafeLocs').click()"
+    t.wait_until -> (window\eval "nui.get('dbc_open')") == "WorldSafeLocs"
+
+    window\exec_js "neutrino.invoke('dbc:relations')"
+
+    t.check "the panel opens on the table in front",
+      (t.wait_until -> (window\eval "nui.get('dbc_graph').focus") == "WorldSafeLocs"),
+      tostring window\eval "nui.get('dbc_graph').focus"
+
+    t.check "with the table it refers to in it",
+      (window\eval "nui.get('dbc_graph').nodes.some(n => n.name === 'Map')") == true,
+      window\eval "nui.get('dbc_graph').nodes.map(n => n.name).join(',')"
+
+    -- Drawn, not merely described: the library has to arrive over the scheme
+    -- handler and put a canvas on screen, and neither is provable from Lua.
+    t.check "and the library draws it",
+      (t.wait_until -> (window\eval "document.querySelectorAll('.dbc-canvas canvas').length") > 0),
+      tostring window\eval "document.querySelectorAll('.dbc-canvas canvas').length"
+
+    t.check "every node it was given is in the graph",
+      (t.wait_until -> (window\eval "window.__cyNodes ? window.__cyNodes() : -1") ==
+        (window\eval "nui.get('dbc_graph').nodes.length")),
+      tostring window\eval "window.__cyNodes ? window.__cyNodes() : -1"
+
+    window\exec_js "nui.set('dbc_graph_open', false)"
+    t.check "and closing it takes the canvas away",
+      (t.wait_until -> (window\eval "document.querySelectorAll('.dbc-canvas canvas').length") == 0),
+      tostring window\eval "document.querySelectorAll('.dbc-canvas canvas').length"
+
+    -- Back to the small table, which is what follows expects to be looking at.
     window\exec_js "[...document.querySelectorAll('.dbc-table')]
       .find(el => el.innerText.trim() === 'ItemBagFamily').click()"
     t.wait_until -> (window\eval "nui.get('dbc_open')") == "ItemBagFamily"

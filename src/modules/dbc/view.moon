@@ -264,7 +264,12 @@ GRID = [==[
                          data-attr-title="cell.e || ''"
                          data-class-is-dirty="cell.d"
                          data-class-is-bad="cell.e"
-                         data-on-focus="dbc_row = row.index"
+                         data-class-is-link="dbc_grid.columns[at].foreign"
+                         data-on-focus="dbc_row = row.index;
+                           if (dbc_resolver && dbc_grid.columns[at].foreign)
+                             window.dbcPick($el, row.index,
+                               dbc_grid.col + at + 1,
+                               dbc_grid.columns[at].foreign)"
                          data-on-keydown="
                            if ($event.key === 'Enter') $el.blur();
                            else if ($event.key === 'Escape') { $el.value = cell.v; $el.blur() }"
@@ -297,6 +302,88 @@ GRID = [==[
 
       <pre class="dbc-preview selectable" data-show="dbc_preview_open"
            data-text="dbc_preview"></pre>
+    </div>
+  </div>
+
+  <!-- The rows a foreign key could point at. Anchored to the cell rather than
+       centred, because what is being answered is "what goes in *there*" and a
+       dialog in the middle of the screen loses the there. -->
+  <div class="surface-float dbc-choices" data-show="dbc_picker.table !== ''">
+    <div class="flex items-center gap-2 border-b border-line px-2 py-1.5">
+      <span class="text-[11px] text-ink-faint" data-text="dbc_picker.table"></span>
+      <button type="button" class="ml-auto text-ink-faint hover:text-ink"
+              data-on-click="dbc_picker = { row: 0, column: 0, table: '', label: '' }"
+        ><%- icon("close", 12) %></button>
+    </div>
+
+    <input type="text" spellcheck="false" placeholder="Search by name or id"
+           class="w-full border-b border-line bg-base-950 px-2 py-1
+                  text-[12px] text-ink"
+           data-on-input="neutrino.invoke('dbc:resolve', {
+             column: dbc_picker.column, needle: $el.value })">
+
+    <div class="max-h-56 overflow-y-auto" data-for="choice in dbc_choices">
+      <template>
+        <button type="button" class="dbc-choice"
+                data-on-click="neutrino.invoke('dbc:set', {
+                    row: dbc_picker.row, column: dbc_picker.column,
+                    value: String(choice.id) });
+                  dbc_picker = { row: 0, column: 0, table: '', label: '' }">
+          <span class="dbc-choice-id" data-text="choice.id"></span>
+          <span class="truncate" data-text="choice.label"></span>
+        </button>
+      </template>
+    </div>
+
+    <div class="border-t border-line px-2 py-1 text-[11px] text-ink-faint"
+         data-show="dbc_choices.length === 0">Nothing matches.</div>
+  </div>
+
+  <!-- Where this table sits among the ones that refer to each other, drawn
+       rather than listed: the shape of the thing is the answer, and a column
+       of names does not have a shape.
+
+       The canvas is Cytoscape's, laid out and drawn by it. A graph is pan,
+       zoom, hit-testing and a force layout, which is a library's work and not
+       a page's. -->
+  <div class="fixed inset-0 z-50 grid place-items-center bg-base-950/60"
+       data-show="dbc_graph_open"
+       data-on-click="if ($event.target === $el) dbc_graph_open = false">
+    <div class="surface-float flex h-[82vh] w-[88vw] flex-col rounded-panel">
+      <div class="flex shrink-0 items-center gap-3 border-b border-line px-4 py-2.5">
+        <h2 class="text-[13.5px] font-semibold text-ink">
+          Linked tables<span data-show="dbc_graph.focus !== ''"
+            data-text="': ' + dbc_graph.focus"></span>
+        </h2>
+
+        <span class="text-[11.5px] text-ink-faint"
+              data-text="dbc_graph.nodes.length + ' tables, ' +
+                dbc_graph.edges.length + ' links'"></span>
+
+        <span class="text-[11.5px] text-ink-faint" data-show="dbc_graph.focus !== ''"
+          >Click a table to open it. Double-click to centre the graph on it.</span>
+        <span class="text-[11.5px] text-ink-faint" data-show="dbc_graph.focus === ''"
+          >Every linked table in the client. Drag to pan, wheel to zoom.</span>
+
+        <div class="ml-auto flex items-center gap-1">
+          <button type="button" class="dbc-chip"
+                  data-on-click="window.dbcGraphFit()">Fit</button>
+          <button type="button" class="dbc-chip"
+                  data-on-click="window.dbcGraphLayout()">Re-arrange</button>
+          <button type="button" class="ml-1 text-ink-faint hover:text-ink"
+                  data-on-click="dbc_graph_open = false"><%- icon("close", 14) %></button>
+        </div>
+      </div>
+
+      <div class="relative min-h-0 flex-1">
+        <div class="dbc-canvas"></div>
+
+        <div class="dbc-graph-empty" data-show="dbc_graph.nodes.length === 0">
+          Nothing is linked to anything here. Either the definitions carry no
+          foreign keys for this build, or the client has none of the tables
+          they name.
+        </div>
+      </div>
     </div>
   </div>
 

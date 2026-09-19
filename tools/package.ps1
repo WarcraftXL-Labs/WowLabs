@@ -18,7 +18,10 @@ param(
     [string]$OutDir = "",
 
     # Open the folder when it is done.
-    [switch]$Show
+    [switch]$Show,
+
+    # Skip starting the packaged application to see that it comes up.
+    [switch]$SkipSmoke
 )
 
 $ErrorActionPreference = "Stop"
@@ -92,6 +95,16 @@ $required = @(
     "app\modules\dbc\relations.lua",
     "app\modules\dbc\query.lua",
     "app\dbc\init.lua",
+
+    # The markup and the scripts. moonc walks past these, so they arrive by a
+    # different route than the code that reads them, and a route that is not
+    # taken is a route nothing notices until the application will not start.
+    "app\shell\views\shell.etlua",
+    "app\shell\views\settings.etlua",
+    "app\shell\views\tool-card.etlua",
+    "app\modules\dbc\views\grid.etlua",
+    "app\modules\dbc\scripts\grid.js",
+
     "rocks\lib\lua\5.1\cjson.dll",
     "definitions\Spell.json",
     "definitions\ItemBagFamily.json",
@@ -110,6 +123,87 @@ if ($missing.Count -gt 0) {
     Write-Host "The package is incomplete:" -ForegroundColor Red
     foreach ($item in $missing) { Write-Host "  missing $item" -ForegroundColor Red }
     exit 1
+}
+
+# --- Check it runs ----------------------------------------------------------
+#
+# Complete is not the same as working. A file resolved against the wrong root,
+# a module that raises while registering itself - either one leaves every named
+# file present and the application dead before its window appears, with two
+# lines in a log and nothing on screen. That happened, and the check above said
+# the package was fine.
+#
+# So it is started, once, and asked to say it got to the shell. Under its own
+# LOCALAPPDATA, so this neither writes into the log somebody is reading nor
+# fights an instance they already have open.
+#
+# Reaching the shell is not enough on its own. The page is served over the
+# scheme handler, and the router turns a template that raises into a warning
+# and an error page - so the window comes up, "shell ready" is logged, and the
+# application is blank. A clean start logs two INFO lines and nothing else, so
+# anything louder than that is the failure.
+
+if (-not $SkipSmoke) {
+    Write-Host ""
+    Write-Host "[wowlabs] Starting it once..." -ForegroundColor Cyan
+
+    $sandbox = Join-Path ([System.IO.Path]::GetTempPath()) "wowlabs-smoke-$PID"
+    if (Test-Path $sandbox) { Remove-Item -Recurse -Force $sandbox }
+    New-Item -ItemType Directory -Path $sandbox -Force | Out-Null
+
+    $log = Join-Path $sandbox "WowLabs\WowLabs.log"
+    $restore = $env:LOCALAPPDATA
+    $env:LOCALAPPDATA = $sandbox
+
+    try {
+        $app = Start-Process -FilePath (Join-Path $OutDir "WowLabs.exe") -PassThru
+    } finally {
+        $env:LOCALAPPDATA = $restore
+    }
+
+    $ready = $false
+    for ($i = 0; $i -lt 60; $i++) {
+        Start-Sleep -Milliseconds 500
+        if ((Test-Path $log) -and ((Get-Content $log -Raw) -match "shell ready")) {
+            $ready = $true
+            break
+        }
+        if ($app.HasExited) { break }
+    }
+
+    if (-not $app.HasExited) { Stop-Process -Id $app.Id -Force }
+    Start-Sleep -Milliseconds 1000
+
+    # Its helpers are its children; one left behind holds the cache directory
+    # and the next run dies four seconds in saying nothing.
+    Get-Process -Name "neutrinocef_helper" -ErrorAction SilentlyContinue |
+        Where-Object { $_.Path -and $_.Path.StartsWith($OutDir) } |
+        Stop-Process -Force -ErrorAction SilentlyContinue
+
+    $complained = @()
+    if (Test-Path $log) {
+        $complained = @(Get-Content $log | Where-Object { $_ -match "WARN|ERROR" })
+    }
+
+    if ((-not $ready) -or $complained.Count -gt 0) {
+        Write-Host ""
+        if (-not $ready) {
+            Write-Host "It started and never reached the shell." -ForegroundColor Red
+        } else {
+            Write-Host "It came up, but it was not happy about it." -ForegroundColor Red
+        }
+
+        if (Test-Path $log) {
+            Get-Content $log -Tail 25 |
+                ForEach-Object { Write-Host "  $_" -ForegroundColor DarkGray }
+        } else {
+            Write-Host "  nothing was logged at $log" -ForegroundColor DarkGray
+        }
+        exit 1
+    }
+
+    Remove-Item -Recurse -Force $sandbox -ErrorAction SilentlyContinue
+    Write-Host "          it reached the shell, quietly." -ForegroundColor Green
 }
 
 $size = (Get-ChildItem -Path $OutDir -Recurse -File |

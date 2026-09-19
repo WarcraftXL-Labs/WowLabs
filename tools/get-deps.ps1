@@ -1,15 +1,16 @@
 # Fetches everything WowLabs needs to build.
 #
-# Two halves: whatever Neutrino needs, which its own script knows about, and the
-# Tailwind compiler, which is ours.
+# Whatever Neutrino needs, which its own script knows about, and the three that
+# are ours: the Tailwind compiler, and the two libraries the interface draws
+# with. All pinned, all fetched once, none of them asked for at runtime.
 #
 #   .\tools\get-deps.ps1
-#   .\tools\get-deps.ps1 -Only tailwind
+#   .\tools\get-deps.ps1 -Only tabulator
 #
 # Run it after cloning, and after `git submodule update` brings a new Neutrino.
 
 param(
-    [ValidateSet("all", "neutrino", "tailwind", "cytoscape")]
+    [ValidateSet("all", "neutrino", "tailwind", "cytoscape", "tabulator")]
     [string]$Only = "all",
 
     # Fetch again even when the file is already there.
@@ -35,6 +36,14 @@ $TailwindExe = Join-Path $BinDir "tailwindcss.exe"
 $CytoscapeVersion = "3.30.2"
 $VendorJs = Join-Path $RootDir "vendor\js"
 $CytoscapeFile = Join-Path $VendorJs "cytoscape.min.js"
+
+# The grid the DBC editor draws with. Keyboard navigation, range selection and
+# clipboard paste are the features a table editor lives on, and the ones that
+# are longest to write by hand; AG Grid has them behind a paid licence, so this
+# is the one that does them under MIT.
+$TabulatorVersion = "6.5.3"
+$TabulatorJs = Join-Path $VendorJs "tabulator.min.js"
+$TabulatorCss = Join-Path $VendorJs "tabulator.min.css"
 
 function Step($message) { Write-Host "[wowlabs] $message" -ForegroundColor Cyan }
 function Note($message) { Write-Host "          $message" -ForegroundColor DarkGray }
@@ -97,6 +106,25 @@ if (Want "cytoscape") {
         Invoke-WebRequest -Uri $url -OutFile $CytoscapeFile -UseBasicParsing
 
         Note "vendor\js\cytoscape.min.js"
+    }
+}
+
+# --- Tabulator --------------------------------------------------------------
+
+if (Want "tabulator") {
+    if ((Test-Path $TabulatorJs) -and (Test-Path $TabulatorCss) -and -not $Force) {
+        Note "Tabulator already present"
+    } else {
+        Step "Tabulator $TabulatorVersion"
+        New-Item -ItemType Directory -Path $VendorJs -Force | Out-Null
+
+        $base = "https://cdn.jsdelivr.net/npm/tabulator-tables@$TabulatorVersion/dist"
+
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        Invoke-WebRequest -Uri "$base/js/tabulator.min.js" -OutFile $TabulatorJs -UseBasicParsing
+        Invoke-WebRequest -Uri "$base/css/tabulator.min.css" -OutFile $TabulatorCss -UseBasicParsing
+
+        Note "vendor\js\tabulator.min.js and .css"
     }
 }
 

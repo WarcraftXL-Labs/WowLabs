@@ -172,16 +172,21 @@ if (-not (Test-Path (Join-Path $StaticOut "app.css"))) {
     exit 1
 }
 
-# The graph library, from vendor/ rather than from static/: it is fetched by
-# get-deps like every other dependency, and a copy committed under static/
-# would be a second place it could drift from.
-$Cytoscape = Join-Path $RootDir "vendor\js\cytoscape.min.js"
-if (Test-Path $Cytoscape) {
-    Copy-Item -Force -Path $Cytoscape -Destination (Join-Path $StaticOut "cytoscape.min.js")
-} else {
-    Write-Host "  vendor\js\cytoscape.min.js is missing. Run:" -ForegroundColor Red
-    Write-Host "  .\tools\get-deps.ps1 -Only cytoscape" -ForegroundColor Red
-    exit 1
+# The libraries the interface draws with, from vendor/ rather than from
+# static/: they are fetched by get-deps like every other dependency, and a copy
+# committed under static/ would be a second place they could drift from.
+$VendorJs = Join-Path $RootDir "vendor\js"
+$Wanted = @("cytoscape.min.js", "tabulator.min.js", "tabulator.min.css")
+
+foreach ($file in $Wanted) {
+    $from = Join-Path $VendorJs $file
+    if (Test-Path $from) {
+        Copy-Item -Force -Path $from -Destination (Join-Path $StaticOut $file)
+    } else {
+        Write-Host "  vendor\js\$file is missing. Run:" -ForegroundColor Red
+        Write-Host "  .\tools\get-deps.ps1" -ForegroundColor Red
+        exit 1
+    }
 }
 
 # Everything else in static/ as it is: fonts, icons, anything not generated.

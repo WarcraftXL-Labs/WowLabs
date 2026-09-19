@@ -264,6 +264,53 @@ t.check "and so does the autosave interval",
 t.check "a field that is not settable is refused rather than dropped",
   (workspace.set "nonsense", 1) == nil
 
+-- ═══════════════════════════════════════════════════════════════════════════
+
+t.section "Keeping the previous version of a file"
+
+-- Every tool writes into the same client, so this belongs to the workspace
+-- rather than to whichever of them is saving. Exercised through the real
+-- files, because what is being promised is a file on disk.
+target = fs.join temp, "keep-me.txt"
+fs.write target, "first", true
+
+t.check "it is off to begin with", (workspace.setting "backup") == false,
+  tostring workspace.setting "backup"
+
+workspace.backup target
+fs.write target, "second", true
+t.check "so nothing is kept beside the file", not fs.exists "#{target}.bak"
+
+t.check "backup is a setting that can be written",
+  (workspace.set "backup", true) == true
+
+workspace.backup target
+fs.write target, "third", true
+t.check "with it on there is a copy", fs.exists "#{target}.bak"
+t.check "holding what was there before the write",
+  (fs.read "#{target}.bak", true) == "second",
+  tostring fs.read "#{target}.bak", true
+
+-- One per file, not a folder that fills up. The whole reason this is a single
+-- `.bak` is that a history is version control's job.
+workspace.backup target
+fs.write target, "fourth", true
+t.check "a second save replaces the copy rather than adding one",
+  (fs.read "#{target}.bak", true) == "third",
+  tostring fs.read "#{target}.bak", true
+
+-- Nothing to keep is not a failure to keep it.
+fresh = fs.join temp, "never-written.txt"
+fresh_ok, fresh_err = workspace.backup fresh
+t.check "a file that is not there yet is not an error", fresh_ok, tostring fresh_err
+t.check "and nothing was invented for it", not fs.exists "#{fresh}.bak"
+
+workspace.reload!
+t.check "and the setting survives a reload", (workspace.setting "backup") == true,
+  tostring workspace.setting "backup"
+
+workspace.set "backup", false
+
 t.check "the output folder falls back to one inside the workspace",
   (fs.comparable workspace.output_dir!) == (fs.comparable fs.join client, "output"),
   workspace.output_dir!

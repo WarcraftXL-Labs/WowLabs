@@ -402,6 +402,16 @@ M.register {
         you to stop: a DBC table is tens of megabytes and writing one per
         keystroke would make the grid unusable."
     }
+    {
+      type: "toggle"
+      path: "settings.workspace.backup"
+      label: "Keep the previous version of a file"
+      help: "Before writing over a file, copy it beside itself as .bak. One per
+        file, replaced each time - the version before this save, not a history,
+        so the folder does not fill up. Applies to every tool. Off by default:
+        a save already writes to a temporary file and renames it over the
+        target, so an interrupted write cannot leave a broken table either way."
+    }
   }
 
   values: ->
@@ -411,6 +421,7 @@ M.register {
       output: workspace.setting "output"
       locale: workspace.setting "locale"
       reopen: workspace.setting "reopen"
+      backup: workspace.setting "backup"
 
       -- A choice hands back the string it was given; the model keeps seconds.
       autosave: tostring workspace.setting "autosave"
@@ -434,7 +445,7 @@ M.register {
 
     workspace.set "autosave", (tonumber(values.autosave) or 300)
 
-    for field in *{ "build", "output", "locale", "reopen" }
+    for field in *{ "build", "output", "locale", "reopen", "backup" }
       value = values[field]
       continue if value == nil
 

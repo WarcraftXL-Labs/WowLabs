@@ -275,11 +275,21 @@ M.attach = (ctx) ->
     -- person can review.
     if library.setting("save_as") == "lua"
       path = fs.join folder, "#{session.name}.lua"
+
+      kept, backup_err = workspace.backup path
+      return false, "#{session.name}: #{backup_err}" unless kept
+
       ok, err = fs.write path, editor.script session
       return false, "#{session.name} could not be saved: #{tostring err}" unless ok
       return true, "#{session.name} written to #{path} as Lua"
 
     path = fs.join folder, "#{session.name}.dbc"
+
+    -- Before the write rather than after: what is being kept is what is on
+    -- disk now, and after the write that is the new version.
+    kept, backup_err = workspace.backup path
+    return false, "#{session.name}: #{backup_err}" unless kept
+
     written, err = editor.save session, path
     return false, "#{session.name} could not be saved: #{tostring err}" unless written
     true, "#{session.name} written to #{path} (#{written} bytes)"

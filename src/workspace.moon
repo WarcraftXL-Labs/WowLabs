@@ -58,6 +58,17 @@ M.DEFAULTS = {
   -- the grid unusable. See `autosave` in shell/window.moon for the delay.
   autosave: 300
 
+  -- Keep the previous version of a file beside it when something writes over
+  -- it. One `.bak` per file, replaced each time: what this is for is the save
+  -- you wish you had not made, which is the one before this one. A history is
+  -- version control's job, and a folder that grows a file per save is a folder
+  -- nobody keeps this switched on for.
+  --
+  -- Off by default, because it doubles what a tool writes into a client, and
+  -- a save already goes to a temporary file and is renamed over the target -
+  -- so an interrupted write cannot leave a broken table either way.
+  backup: false
+
   -- The tools starred on the home page, most useful first.
   favourites: json.array {}
 
@@ -215,7 +226,7 @@ M.restore = ->
 -- field name is otherwise a setting that never persists and never says why.
 FIELDS = {
   path: true, build: true, output: true, locale: true, reopen: true
-  favourites: true, autosave: true
+  favourites: true, autosave: true, backup: true
 }
 
 --- Changes one field and persists it.
@@ -248,6 +259,26 @@ M.output_dir = ->
   return nil if doc.path == ""
 
   fs.join doc.path, "output"
+
+--- Keeps the previous version of a file, if the workspace asks for it.
+--
+-- Called by anything about to write over a file that is already there. Every
+-- tool writes into the same client, so the answer belongs to the workspace
+-- rather than to whichever of them happens to be saving.
+--
+-- Nothing to keep is success: a file being written for the first time has no
+-- previous version, which is not a failure to preserve one. A copy that fails
+-- is reported, though - carrying on would write over the only copy of
+-- something the user asked to keep.
+---@param path string The file about to be written.
+---@return boolean ok, string|nil err
+M.backup = (path) ->
+  return true unless loaded!.backup
+  return true unless path and path != "" and fs.is_file path
+
+  ok, err = fs.copy path, "#{path}.bak"
+  return false, "could not keep a copy of #{path}: #{tostring err}" unless ok
+  true
 
 --- Forgets what was read, so the next call reads the disk again.
 -- For the suites, and for a settings file edited by hand while the tool runs.

@@ -281,10 +281,19 @@ app\on "ready", ->
     t.check "and offers the tools instead", cards! == expected_cards,
       "#{cards!} of #{expected_cards}"
 
+    -- By what the card holds rather than by how many lines it prints: the
+    -- star made it three, and a check counting lines would have called that
+    -- a regression when it was the feature.
     t.check "each of them says what it is for",
       (window\eval "[...document.querySelectorAll('.tool-card')]
         .filter(el => el.getClientRects().length > 0)
-        .every(el => el.innerText.trim().split('\\n').length === 2)") == true
+        .every(el => {
+          const name = el.querySelector('[data-name]')
+          const about = el.querySelector('[data-about]')
+          return !!name && !!about
+            && name.innerText.trim().length > 0
+            && about.innerText.trim().length > 0
+        })") == true
 
     t.check "and the active tool is not among them",
       (window\eval "[...document.querySelectorAll('.tool-card')]

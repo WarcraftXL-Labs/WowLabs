@@ -375,6 +375,44 @@
     @apply text-accent;
   }
 
+  .tool-star {
+    @apply absolute right-1 top-1 grid h-5 w-5 place-items-center rounded
+           text-[12px] leading-none text-ink-faint opacity-0
+           transition-opacity duration-75;
+  }
+
+  .tool-card:hover .tool-star,
+  .tool-star.is-on {
+    @apply opacity-100;
+  }
+
+  .tool-star.is-on {
+    @apply text-accent;
+  }
+
+  .tool-star:hover {
+    @apply bg-base-700 text-accent;
+  }
+
+  /* The tab strip scrolls once there are more tabs than room. A thin bar,
+     because a full-width one would be as tall as the tabs it sits under. */
+  .tab-strip {
+    scrollbar-width: thin;
+  }
+
+  .tab-strip::-webkit-scrollbar {
+    height: 3px;
+  }
+
+  .tab-strip::-webkit-scrollbar-thumb {
+    @apply bg-base-700;
+  }
+
+  /* The heading over each half of the picker. */
+  .tool-section {
+    @apply mb-2 text-[11px] font-medium uppercase tracking-wide text-ink-faint;
+  }
+
   .status-item {
     @apply flex items-center gap-1.5 px-2 h-full text-ink-faint;
   }

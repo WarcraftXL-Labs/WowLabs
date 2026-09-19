@@ -147,7 +147,7 @@ SOURCE = [==[
     <% for _, entry in ipairs(tools) do %>
       <button type="button" class="category-button group"
               data-class-is-active="tool === '<%= entry.id %>'"
-              data-on-click="tool = '<%= entry.id %>'">
+              data-on-click="neutrino.invoke('shell:tool', '<%= entry.id %>')">
         <%- icon(entry.icon or "home", 17) %>
         <span class="surface-float tip tip-below"><%= entry.label %></span>
       </button>
@@ -198,16 +198,32 @@ SOURCE = [==[
 
     <!-- Work area -->
     <main class="flex min-w-0 flex-1 flex-col bg-base-900">
-      <div class="flex h-9 shrink-0 items-end border-b border-line bg-base-850 px-1"
-           data-show="tabs.length > 0">
-        <div class="flex gap-px" data-for="tab in tabs">
+      <!-- One tool's tabs, not everyone's. A tab belongs to the tool that
+           opened it, so moving to another tool puts that tool's work on
+           screen rather than a row of everything ever opened. A tab with no
+           tool of its own is the shell's, and the shell lives in Workspace. -->
+      <!-- Open twenty tables and the strip runs past the window, so it
+           scrolls. The wheel is turned sideways here: there is nothing to
+           scroll vertically in a row of tabs, and a wheel that did nothing
+           would read as the strip being stuck. -->
+      <div class="tab-strip flex h-9 shrink-0 items-end overflow-x-auto
+                  border-b border-line bg-base-850 px-1"
+           data-show="tabs.filter(t => (t.tool || 'workspace') === tool).length > 0"
+           data-on-wheel="if ($event.deltaY !== 0) {
+             $event.preventDefault(); $el.scrollLeft += $event.deltaY }">
+        <div class="flex gap-px"
+             data-for="tab in tabs.filter(t => (t.tool || 'workspace') === tool)">
           <template>
             <button type="button"
-                    class="flex h-8 items-center gap-2 rounded-t-sm border border-b-0
-                           border-transparent px-3 text-[12.5px] text-ink-dim"
+                    class="flex h-8 shrink-0 items-center gap-2 rounded-t-sm border
+                           border-b-0 border-transparent px-3 text-[12.5px] text-ink-dim"
                     data-class-bg-base-900="tab.id === active_tab"
                     data-class-border-line="tab.id === active_tab"
                     data-class-text-ink="tab.id === active_tab"
+                    data-attr-title="tab.title"
+                    data-on-mousedown="if ($event.button === 1) {
+                      $event.preventDefault();
+                      neutrino.invoke('shell:close-tab', tab.id) }"
                     data-on-click="active_tab = tab.id; tool = tab.tool || tool">
               <span data-text="tab.title"></span>
               <!-- A page that takes the work area has to be dismissable, or it
@@ -242,7 +258,8 @@ SOURCE = [==[
            empty grid and leave you to guess - and once that has been done, it
            should stop saying it. -->
       <div class="grid min-h-0 flex-1 place-items-center"
-           data-show="tabs.length === 0 && workspace === ''">
+           data-show="tabs.filter(t => (t.tool || 'workspace') === tool).length === 0
+                      && workspace === ''">
         <div class="max-w-md text-center">
           <div class="mx-auto mb-4 grid h-14 w-14 place-items-center rounded-full
                       border border-line bg-base-850 text-ink-faint">
@@ -279,26 +296,38 @@ SOURCE = [==[
            The active tool is left out. This is the home page of whichever tool
            you are in, so its own entry would be the one card that does
            nothing. -->
-      <div class="grid min-h-0 flex-1 place-items-center"
-           data-show="tabs.length === 0 && workspace !== ''">
-        <div class="w-full max-w-lg px-8">
+      <div class="min-h-0 flex-1 overflow-y-auto"
+           data-show="tabs.filter(t => (t.tool || 'workspace') === tool).length === 0
+                      && workspace !== ''">
+        <div class="mx-auto w-full max-w-3xl px-8 py-10">
           <h1 class="text-[15px] font-semibold text-ink">Workspace open</h1>
-          <p class="mb-5 truncate text-[12.5px] text-ink-faint" data-text="workspace"></p>
+          <p class="mb-6 truncate text-[12.5px] text-ink-faint" data-text="workspace"></p>
 
-          <div class="flex flex-col gap-1.5">
+          <!-- Starred first, and only when there are any. An empty heading
+               over an empty row would be the picker teaching itself. -->
+          <div class="mb-6" data-show="favourites.length > 0">
+            <h2 class="tool-section">Favourites</h2>
+            <div class="tool-grid">
+              <% for _, entry in ipairs(tools) do %>
+                <div class="tool-card" data-tool="<%= entry.id %>"
+                     data-show="favourites.includes('<%= entry.id %>')
+                                && tool !== '<%= entry.id %>'">
+                  <%- tool_card(entry, icon) %>
+                </div>
+              <% end %>
+            </div>
+          </div>
+
+          <!-- The active tool is left out. This is the home page of whichever
+               tool you are in, so its own card would be the one that does
+               nothing. -->
+          <h2 class="tool-section">All tools</h2>
+          <div class="tool-grid">
             <% for _, entry in ipairs(tools) do %>
-              <button type="button" class="tool-card" data-tool="<%= entry.id %>"
-                      data-show="tool !== '<%= entry.id %>'"
-                      data-on-click="tool = '<%= entry.id %>'">
-                <span class="grid h-8 w-8 shrink-0 place-items-center rounded
-                             border border-line bg-base-800 text-ink-faint"
-                ><%- icon(entry.icon or "home", 16) %></span>
-                <span class="min-w-0">
-                  <span class="block text-[12.5px] text-ink"><%= entry.label %></span>
-                  <span class="block truncate text-[11.5px] text-ink-faint"
-                  ><%= entry.description or "" %></span>
-                </span>
-              </button>
+              <div class="tool-card" data-tool="<%= entry.id %>"
+                   data-show="tool !== '<%= entry.id %>'">
+                <%- tool_card(entry, icon) %>
+              </div>
             <% end %>
           </div>
         </div>
@@ -331,6 +360,49 @@ template = nil
 
 --- The whole shell.
 --
+ESCAPES = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }
+
+--- HTML-escapes a value built into markup from Lua.
+--
+-- etlua's `<%= %>` does this inside a template; a fragment assembled here has
+-- to do it itself. A tool's label is ours today and a module's tomorrow.
+---@param text any
+---@return string
+---@private
+escape = (text) -> (tostring(text or "")\gsub "[&<>\"']", ESCAPES)
+
+CARD = [[
+<button type="button" class="tool-star"
+        data-class-is-on="favourites.includes('%s')"
+        data-attr-title="favourites.includes('%s') ? 'Remove from favourites'
+          : 'Add to favourites'"
+        data-on-click="event.stopPropagation();
+                       neutrino.invoke('shell:favourite', '%s')">&#9733;</button>
+
+<button type="button" class="flex w-full flex-col items-center gap-2"
+        data-on-click="neutrino.invoke('shell:tool', '%s')">
+  <span class="grid h-10 w-10 place-items-center rounded border border-line
+               bg-base-800 text-ink-faint">%s</span>
+  <span data-name class="text-[12.5px] text-ink">%s</span>
+  <span data-about class="text-[11px] leading-snug text-ink-faint">%s</span>
+</button>
+]]
+
+--- The inside of one card on the home page's picker.
+--
+-- Two buttons rather than one: a star nested inside the button that opens the
+-- tool could not be clicked without also opening it.
+---@param entry table A registered tool.
+---@param icon fun(name: string, size?: integer): string
+---@return string html
+---@private
+tool_card = (entry, icon) ->
+  id = escape entry.id
+  string.format CARD, id, id, id, id,
+    (icon entry.icon or "home", 20),
+    (escape entry.label),
+    (escape entry.description or "")
+
 -- Rendered after every tool has registered, since what a tool contributes is
 -- built into the markup rather than pushed in later.
 ---@return string html
@@ -347,6 +419,7 @@ render = ->
     tools: tools.list
     settings_page: settings.render icon
     :icon
+    :tool_card
   }
 
 { :render, :icon, :ICONS }

@@ -46,6 +46,11 @@ initial_state = ->
     recent: workspace.recent!             -- the File menu's list
     status: "Ready"
 
+    -- The tools starred on the home page, most useful first. Kept in the
+    -- workspace's own settings: which tools someone reaches for is a property
+    -- of what they are working on.
+    favourites: json.array (workspace.setting("favourites") or {})
+
     -- Work
     tabs: json.array {}
     active_tab: ""
@@ -205,9 +210,40 @@ M.mount = (app, server) ->
       state\set "tabs", json.array kept
 
       -- Falls back to whatever is left rather than to nothing, so closing one
-      -- of several tabs does not drop you on the empty state.
+      -- of several tabs does not drop you on the empty state. Of this tool's
+      -- own tabs: the strip only shows those, and landing on another tool's
+      -- would move the whole window somewhere nobody asked to go.
       if state\get("active_tab") == id
-        state\set "active_tab", kept[1] and kept[1].id or ""
+        current = state\get "tool"
+        mine = [tab for tab in *kept when (tab.tool or "workspace") == current]
+        state\set "active_tab", mine[#mine] and mine[#mine].id or ""
+      nil
+
+    --- Moves to a tool, and to whatever of its work was last on screen.
+    --
+    -- A tab belongs to the tool that opened it, so changing tool changes which
+    -- tabs exist as far as the strip is concerned. Without this the active tab
+    -- would stay pointing at a tab the strip no longer shows, and the work
+    -- area would draw another tool's page under this tool's rail.
+    window\handle "shell:tool", (id) ->
+      return nil unless type(id) == "string" and tools.find id
+      state\set "tool", id
+
+      tabs = state\get("tabs") or {}
+      mine = [tab for tab in *tabs when (tab.tool or "workspace") == id]
+      state\set "active_tab", mine[#mine] and mine[#mine].id or ""
+      nil
+
+    --- Stars a tool, or unstars it.
+    window\handle "shell:favourite", (id) ->
+      return nil unless type(id) == "string" and tools.find id
+
+      current = state\get("favourites") or {}
+      kept = [name for name in *current when name != id]
+      table.insert kept, id if #kept == #current
+
+      state\set "favourites", json.array kept
+      workspace.set "favourites", kept
       nil
 
     settings.mount window, state

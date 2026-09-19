@@ -133,6 +133,30 @@ if (-not (Test-Path (Join-Path $DistDir "main.lua"))) {
     exit 1
 }
 
+# What a module ships beside its code: etlua markup and the JavaScript the
+# page is driven with. Files of their own kind rather than Lua strings, so
+# moonc walks past them - they are copied at the path the module asks for.
+Step "Module resources"
+$resources = Get-ChildItem -Path $SrcDir -Recurse -Include "*.etlua", "*.js"
+
+foreach ($item in $resources) {
+    $relative = $item.FullName.Substring("$SrcDir".Length + 1)
+    $target = Join-Path $DistDir $relative
+    New-Item -ItemType Directory -Path (Split-Path $target) -Force | Out-Null
+    Copy-Item -Force -Path $item.FullName -Destination $target
+}
+
+# Named rather than counted, for the same reason the definitions are: a
+# template that did not arrive is a region that renders empty, and the place
+# to find that out is here.
+foreach ($required in @("modules\dbc\views\grid.etlua",
+                        "modules\dbc\scripts\grid.js")) {
+    if (-not (Test-Path (Join-Path $DistDir $required))) {
+        Write-Host "$required was not copied into dist\." -ForegroundColor Red
+        exit 1
+    }
+}
+
 # Suites compile beside the harness rather than into dist\ itself, where a
 # suite named after a package would shadow it.
 $TestsSrc = Join-Path $RootDir "tests"

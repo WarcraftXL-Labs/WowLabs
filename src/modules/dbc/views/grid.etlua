@@ -1,0 +1,269 @@
+<div class="flex min-h-0 flex-1 flex-col">
+
+  <!-- Nothing open yet. The panel beside this is the list, so the thing to
+       say is where it is. -->
+  <div class="grid min-h-0 flex-1 place-items-center" data-show="dbc_open === ''">
+    <div class="max-w-sm text-center">
+      <h2 class="mb-1 text-[14px] font-semibold text-ink">No table open</h2>
+      <p class="text-[12.5px] leading-relaxed text-ink-dim">
+        Choose one from the list on the left. A table with no definition for
+        this build is there but cannot be opened.
+      </p>
+    </div>
+  </div>
+
+  <div class="flex min-h-0 flex-1 flex-col" data-show="dbc_open !== ''">
+
+    <!-- The language this file is really written in is not always the one the
+         workspace is set to, and writing a cell at the wrong slot leaves the
+         row holding two names. Offered rather than done, unless the setting
+         says otherwise. -->
+    <div class="dbc-banner" data-show="dbc_locale_hint !== ''">
+      <span data-text="dbc_locale_hint"></span>
+      <button type="button" class="dbc-chip"
+              data-on-click="neutrino.invoke('dbc:use-locale', dbc_locale_offer)"
+              data-text="'Switch to ' + dbc_locale_offer"></button>
+      <button type="button" class="dbc-chip" data-on-click="dbc_locale_hint = ''"
+        >Keep <span data-text="dbc_info.locale"></span></button>
+    </div>
+
+    <div class="relative flex min-h-0 flex-1 flex-col">
+      <!-- Where Tabulator draws. The host is the flex child itself and
+           nothing is positioned inside it: a library that measures its
+           container and finds no height lays the whole grid out into a point,
+           which is every count correct and an empty screen. -->
+      <div class="dbc-grid min-h-0 flex-1"></div>
+
+      <!-- Nothing to show. Over the grid rather than instead of it: taking the
+           host out of the layout would leave the library measuring a box that
+           is not there when the rows come back. The header stays visible,
+           because it is still the answer to "which columns". -->
+      <div class="dbc-grid-empty" data-show="dbc_info.shown === 0">
+        <span data-show="dbc_changed_only">Nothing in this table has been
+          changed yet. Edit a cell, or turn "Changed only" off.</span>
+        <span data-show="!dbc_changed_only && dbc_query !== ''">No row matches
+          that filter.</span>
+        <span data-show="!dbc_changed_only && dbc_query === ''">This table has
+          no rows.</span>
+      </div>
+    </div>
+
+    <!-- The generated Lua, along the bottom. Closed to a single bar, because
+         it answers a question you only sometimes have. -->
+    <div class="shrink-0 border-t border-line bg-base-850">
+      <button type="button" class="flex w-full items-center gap-2 px-2 py-1
+                                   text-[11.5px] text-ink-dim"
+              data-on-click="dbc_preview_open = !dbc_preview_open;
+                             if (dbc_preview_open) neutrino.invoke('dbc:preview')">
+        <span class="dbc-caret" data-class-is-open="dbc_preview_open"
+        ><%- icon("chevron", 14) %></span>
+        <span>Lua</span>
+        <span class="text-ink-faint"
+              data-text="dbc_info.changes === 1 ? '1 changed row'
+                : dbc_info.changes + ' changed rows'"></span>
+      </button>
+
+      <pre class="dbc-preview selectable" data-show="dbc_preview_open"
+           data-text="dbc_preview"></pre>
+    </div>
+  </div>
+
+  <!-- The rows a foreign key could point at. Anchored to the cell rather than
+       centred, because what is being answered is "what goes in *there*" and a
+       dialog in the middle of the screen loses the there. -->
+  <div class="surface-float dbc-choices" data-show="dbc_picker.table !== ''">
+    <div class="flex items-center gap-2 border-b border-line px-2 py-1.5">
+      <span class="text-[11px] text-ink-faint" data-text="dbc_picker.table"></span>
+      <button type="button" class="ml-auto text-ink-faint hover:text-ink"
+              data-on-click="dbc_picker = { row: 0, column: 0, table: '', label: '' }"
+        ><%- icon("close", 12) %></button>
+    </div>
+
+    <input type="text" spellcheck="false" placeholder="Search by name or id"
+           class="w-full border-b border-line bg-base-950 px-2 py-1
+                  text-[12px] text-ink"
+           data-on-input="neutrino.invoke('dbc:resolve', {
+             column: dbc_picker.column, needle: $el.value })">
+
+    <div class="max-h-56 overflow-y-auto" data-for="choice in dbc_choices">
+      <template>
+        <button type="button" class="dbc-choice"
+                data-on-click="window.dbcChoose(dbc_picker.row,
+                    dbc_picker.column, choice.id);
+                  dbc_picker = { row: 0, column: 0, table: '', label: '' }">
+          <span class="dbc-choice-id" data-text="choice.id"></span>
+          <span class="truncate" data-text="choice.label"></span>
+        </button>
+      </template>
+    </div>
+
+    <div class="border-t border-line px-2 py-1 text-[11px] text-ink-faint"
+         data-show="dbc_choices.length === 0">Nothing matches.</div>
+  </div>
+
+  <!-- Where this table sits among the ones that refer to each other, drawn
+       rather than listed: the shape of the thing is the answer, and a column
+       of names does not have a shape.
+
+       The canvas is Cytoscape's, laid out and drawn by it. A graph is pan,
+       zoom, hit-testing and a force layout, which is a library's work and not
+       a page's. -->
+  <div class="fixed inset-0 z-50 grid place-items-center bg-base-950/60"
+       data-show="dbc_graph_open"
+       data-on-click="if ($event.target === $el) dbc_graph_open = false">
+    <div class="surface-float flex h-[82vh] w-[88vw] flex-col rounded-panel">
+      <div class="flex shrink-0 items-center gap-3 border-b border-line px-4 py-2.5">
+        <h2 class="text-[13.5px] font-semibold text-ink">
+          Linked tables<span data-show="dbc_graph.focus !== ''"
+            data-text="': ' + dbc_graph.focus"></span>
+        </h2>
+
+        <span class="text-[11.5px] text-ink-faint"
+              data-text="dbc_graph.nodes.length + ' tables, ' +
+                dbc_graph.edges.length + ' links'"></span>
+
+        <span class="text-[11.5px] text-ink-faint" data-show="dbc_graph.focus !== ''"
+          >Click a table to open it. Double-click to centre the graph on it.</span>
+        <span class="text-[11.5px] text-ink-faint" data-show="dbc_graph.focus === ''"
+          >Every linked table in the client. Drag to pan, wheel to zoom.</span>
+
+        <div class="ml-auto flex items-center gap-1">
+          <!-- The whole client, whether or not a table is in front. Without
+               this the wide view is only reachable before the first table is
+               opened, because the one in front stays in front. -->
+          <button type="button" class="dbc-chip"
+                  data-class-is-on="dbc_graph.focus === ''"
+                  data-on-click="neutrino.invoke('dbc:relations', '*')"
+            >Whole client</button>
+          <button type="button" class="dbc-chip" data-show="dbc_open !== ''"
+                  data-class-is-on="dbc_graph.focus !== ''"
+                  data-on-click="neutrino.invoke('dbc:relations', dbc_open)"
+                  data-text="dbc_open"></button>
+
+          <span class="mx-1 h-4 w-px bg-line"></span>
+
+          <button type="button" class="dbc-chip"
+                  data-on-click="window.dbcGraphFit()">Fit</button>
+          <button type="button" class="dbc-chip"
+                  data-on-click="window.dbcGraphLayout()">Re-arrange</button>
+          <button type="button" class="ml-1 text-ink-faint hover:text-ink"
+                  data-on-click="dbc_graph_open = false"><%- icon("close", 14) %></button>
+        </div>
+      </div>
+
+      <!-- The host is the flex child itself. Wrapped in a relative box with
+           the canvas absolutely inside it, the canvas took its width from the
+           wrapper and no height at all - and a graph laid out into a box of
+           no height is a graph nobody can see. -->
+      <div class="dbc-canvas min-h-0 flex-1"
+           data-show="dbc_graph.nodes.length > 0"></div>
+
+      <div class="dbc-graph-empty" data-show="dbc_graph.nodes.length === 0">
+        Nothing is linked to anything here. Either the definitions carry no
+        foreign keys for this build, or the client has none of the tables
+        they name.
+      </div>
+    </div>
+  </div>
+
+  <!-- What the filter box understands. Reachable from the box itself and from
+       Help, because the two ways people look for this are "what do I type
+       here" and "where is the documentation". -->
+  <div class="fixed inset-0 z-50 grid place-items-center bg-base-950/60"
+       data-show="dbc_help"
+       data-on-click="if ($event.target === $el) dbc_help = false">
+    <div class="surface-float flex max-h-[80vh] w-[620px] flex-col rounded-panel">
+      <div class="flex shrink-0 items-center border-b border-line px-4 py-2.5">
+        <h2 class="text-[13.5px] font-semibold text-ink">Filtering rows</h2>
+        <button type="button" class="ml-auto text-ink-faint hover:text-ink"
+                data-on-click="dbc_help = false"><%- icon("close", 14) %></button>
+      </div>
+
+      <div class="min-h-0 flex-1 overflow-y-auto px-4 py-3 text-[12.5px]
+                  leading-relaxed text-ink-dim selectable">
+
+        <p class="mb-3">
+          Type a phrase to search every text column, or a condition to search
+          one column by name.
+        </p>
+
+        <dl class="dbc-help">
+          <dt>fire bolt</dt>
+          <dd>Rows holding that text in any string or localised column.</dd>
+
+          <dt>SpellLevel &gt; 60</dt>
+          <dd>Numbers compare as numbers. Also <code>&lt;</code>
+              <code>&lt;=</code> <code>&gt;=</code> <code>=</code>
+              <code>!=</code>.</dd>
+
+          <dt>Name LIKE 'Fire%'</dt>
+          <dd><code>%</code> stands for any run of characters and
+              <code>_</code> for exactly one. The whole value has to match.</dd>
+
+          <dt>Name CONTAINS 'bolt'</dt>
+          <dd>Anywhere in the value. <code>STARTS</code> and <code>ENDS</code>
+              work the same way.</dd>
+
+          <dt>SpellLevel &gt;= 60 AND Category = 0</dt>
+          <dd><code>AND</code>, <code>OR</code>, <code>NOT</code> and brackets.</dd>
+        </dl>
+
+        <h3 class="mb-1 mt-4 text-[12.5px] font-semibold text-ink">
+          Localised columns
+        </h3>
+        <p class="mb-2">
+          A localised field has one column per language, and its name carries a
+          space &mdash; which the filter reads as two words. Quote it, or join
+          it with a dot:
+        </p>
+        <dl class="dbc-help">
+          <dt>'Name_lang frFR' CONTAINS 'feu'</dt>
+          <dd>The French column of <code>Name_lang</code>.</dd>
+
+          <dt>Name_lang.frFR LIKE 'Boule%'</dt>
+          <dd>The same column, without reaching for the quote key.</dd>
+
+          <dt>Name_lang CONTAINS 'feu'</dt>
+          <dd>Falls back to the field's first column, which is whichever
+              language is leftmost.</dd>
+        </dl>
+
+        <h3 class="mb-1 mt-4 text-[12.5px] font-semibold text-ink">
+          Two things worth knowing
+        </h3>
+        <p class="mb-2">
+          Text comparisons ignore case, all of them.
+        </p>
+        <p>
+          Quoting a number asks for a text comparison, which is not the same
+          answer: <code>SpellLevel &gt; 10</code> keeps 11 and up, while
+          <code>SpellLevel &gt; '10'</code> keeps 2, 9 and 11 &mdash; because
+          "2" sorts after "10" as text.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Deleting asks first. A row is gone from the grid the moment it goes, and
+       the only way back is an undo the user has to know about. -->
+  <div class="fixed inset-0 z-50 grid place-items-center bg-base-950/60"
+       data-show="dbc_confirm !== ''">
+    <div class="surface-float w-[380px] rounded-panel p-4">
+      <h2 class="mb-1 text-[13.5px] font-semibold text-ink">Delete row</h2>
+      <p class="mb-4 text-[12.5px] leading-relaxed text-ink-dim"
+         data-text="dbc_confirm"></p>
+      <div class="flex justify-end gap-2">
+        <button type="button"
+                class="rounded border border-line bg-base-800 px-3 py-1.5
+                       text-[12.5px] text-ink-dim transition-colors
+                       hover:border-base-600 hover:text-ink"
+                data-on-click="dbc_confirm = ''">Cancel</button>
+        <button type="button"
+                class="rounded border border-danger bg-base-800 px-3 py-1.5
+                       text-[12.5px] text-ink transition-colors hover:bg-danger"
+                data-on-click="dbc_confirm = ''; neutrino.invoke('dbc:delete-row')"
+        >Delete</button>
+      </div>
+    </div>
+  </div>
+</div>

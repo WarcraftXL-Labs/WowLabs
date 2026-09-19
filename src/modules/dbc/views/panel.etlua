@@ -1,0 +1,36 @@
+<div class="flex min-h-0 flex-1 flex-col">
+  <div class="flex shrink-0 items-center gap-2 border-b border-line px-2 py-1.5">
+    <input type="text" spellcheck="false" placeholder="Filter tables"
+           class="w-full rounded border border-line bg-base-950 px-2 py-1
+                  text-[12px] text-ink"
+           data-model="dbc_filter">
+  </div>
+
+  <div class="min-h-0 flex-1 overflow-y-auto p-1"
+       data-for="entry in dbc_tables.filter(e => e.name.toLowerCase().includes(dbc_filter.toLowerCase()))">
+    <template>
+      <!-- One click reads, two keep. In the two-click mode a single click
+           still opens the table - you can read it, sort it, search it - but
+           into one reused tab that the next single click replaces. A double
+           click, or the first edit, gives it a tab of its own.
+
+           In the one-click mode every click keeps, which is the simpler
+           behaviour for somebody working in two or three tables all day. -->
+      <button type="button" class="dbc-table"
+              data-class-is-open="entry.name === dbc_open"
+              data-class-is-picked="entry.name === dbc_picked && entry.name !== dbc_open"
+              data-attr-data-disabled="!entry.editable"
+              data-attr-title="entry.editable ? entry.name : entry.name + ': no definition for this build'"
+              data-on-click="dbc_picked = entry.name;
+                if (entry.editable) neutrino.invoke('dbc:open', {
+                  name: entry.name, pinned: dbc_open_on === 'single' })"
+              data-on-dblclick="if (entry.editable) neutrino.invoke('dbc:open', {
+                name: entry.name, pinned: true })">
+        <span class="truncate" data-text="entry.name"></span>
+      </button>
+    </template>
+  </div>
+
+  <div class="shrink-0 border-t border-line px-2 py-1.5 text-[11.5px] text-ink-faint"
+       data-text="dbc_tables.length + ' tables'"></div>
+</div>

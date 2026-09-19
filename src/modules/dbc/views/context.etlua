@@ -1,0 +1,106 @@
+<div class="flex w-full items-center gap-3">
+  <span class="font-medium text-ink" data-text="dbc_open || 'No table open'"></span>
+
+  <span class="text-ink-faint" data-show="dbc_open !== ''"
+        data-text="dbc_info.shown === dbc_info.rows
+          ? dbc_info.rows + ' rows, ' + dbc_info.columns + ' columns'
+          : dbc_info.shown + ' of ' + dbc_info.rows + ' rows'"></span>
+
+  <!-- Which slot a localised column is being read and written at. Silence here
+       is how a frFR client ends up with an enUS name written over it. -->
+  <span class="rounded border border-line px-1.5 text-[11.5px] text-ink-dim"
+        data-show="dbc_open !== '' && !dbc_info.spread"
+        data-text="'Text: ' + dbc_info.locale"></span>
+
+  <span class="rounded border border-line px-1.5 text-[11.5px] text-ink-faint"
+        data-show="dbc_open !== '' && dbc_info.spread">All languages</span>
+
+  <span class="rounded border border-line px-1.5 text-[11.5px] text-ink-faint"
+        data-show="dbc_open !== '' && !dbc_info.has_id"
+        title="This table keeps no ID in its records, so a row is named by its position."
+      >No ID column</span>
+
+  <!-- Paging starts partway down, which is how a row deep in a large table is
+       reached at all: the grid is fed forwards, so getting to row 40,000 means
+       beginning there. Said out loud, with the way back beside it. -->
+  <button type="button" class="dbc-chip" data-show="dbc_info.from > 0"
+          data-on-click="neutrino.invoke('dbc:top')"
+          data-text="'From row ' + (dbc_info.from + 1) + ' — back to the top'"></button>
+
+  <!-- What you want in front of you before saving. -->
+  <button type="button" class="dbc-chip" data-show="dbc_open !== ''"
+          data-class-is-on="dbc_changed_only"
+          data-on-click="neutrino.invoke('dbc:changed-only')"
+          title="Show only the rows this session has changed"
+    >Changed only</button>
+
+  <!-- Closes the column list on the next click anywhere else. -->
+  <div class="fixed inset-0 z-30" data-show="dbc_cols_open"
+       data-on-click="dbc_cols_open = false"></div>
+
+  <!-- Spell has 105 columns and nobody wants all of them. Dragging a header
+       reorders; this is where one is taken off the screen and put back. -->
+  <div class="relative" data-show="dbc_open !== ''">
+    <button type="button" class="dbc-chip"
+            data-class-is-on="dbc_columns.some(c => !c.shown)"
+            data-on-click="dbc_cols_open = !dbc_cols_open"
+            data-text="'Columns ' + dbc_columns.filter(c => c.shown).length +
+              '/' + dbc_columns.length"></button>
+
+    <div class="surface-float dbc-columns" data-show="dbc_cols_open">
+      <div class="flex shrink-0 items-center gap-1 border-b border-line px-2 py-1.5">
+        <span class="text-[11px] text-ink-faint">Shown in the grid</span>
+        <button type="button" class="dbc-chip ml-auto"
+                data-on-click="neutrino.invoke('dbc:columns', { every: true })"
+          >All</button>
+        <button type="button" class="dbc-chip"
+                data-on-click="neutrino.invoke('dbc:columns', { every: false })"
+          >None</button>
+      </div>
+
+      <div class="min-h-0 flex-1 overflow-y-auto py-1" data-for="column in dbc_columns">
+        <template>
+          <!-- A button rather than a checkbox: an input's checked state is the
+               browser's once it has been clicked, and an attribute written
+               from the store no longer moves it. -->
+          <button type="button" class="dbc-column" data-class-is-on="column.shown"
+                  data-on-click="neutrino.invoke('dbc:columns', {
+                    column: column.index, shown: !column.shown })">
+            <span class="dbc-column-mark" data-text="column.shown ? '✓' : ''"></span>
+            <span class="truncate" data-text="column.label"></span>
+            <span class="ml-auto pl-2 text-[10.5px] text-ink-faint"
+                  data-text="column.kind"></span>
+          </button>
+        </template>
+      </div>
+    </div>
+  </div>
+
+  <!-- The search. The box is the whole query: a picker that set a second,
+       hidden filter beside it would mean two places to look when the grid
+       shows something unexpected. What the list of columns was for is served
+       better by the help beside it, which can say what to do with them. -->
+  <form class="ml-auto flex items-center gap-1" data-show="dbc_open !== ''"
+        data-on-submit="$event.preventDefault(); neutrino.invoke('dbc:query', dbc_query)">
+
+    <input type="text" spellcheck="false"
+           placeholder="Name LIKE 'Fire%' AND SpellLevel > 10"
+           class="w-[300px] rounded border border-line bg-base-950 px-2 py-0.5
+                  text-[12px] text-ink"
+           data-class-is-bad="dbc_query_error !== ''"
+           data-attr-title="dbc_query_error"
+           data-model="dbc_query"
+           data-on-keydown="if ($event.key === 'Escape') {
+             dbc_query = ''; neutrino.invoke('dbc:query', '') }">
+
+    <button type="button" class="dbc-chip" data-show="dbc_query !== ''"
+            data-on-click="dbc_query = ''; neutrino.invoke('dbc:query', '')"
+            title="Clear the search">Clear</button>
+
+    <button type="button" class="dbc-help-button" title="How to write a filter"
+            data-on-click="dbc_help = true">?</button>
+  </form>
+
+  <span class="truncate pl-3 text-danger" data-show="dbc_message !== ''"
+        data-text="dbc_message"></span>
+</div>

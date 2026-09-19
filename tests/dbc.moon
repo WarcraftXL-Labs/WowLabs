@@ -1510,6 +1510,77 @@ app\on "ready", ->
       "#{styled '.tabulator-cell.is-bad', 'color'} against
         #{token '--color-danger'}"
 
+    t.section "Picking a value off the reference list"
+
+    -- The other way a value gets into a cell. It writes through `dbc:set`
+    -- like a typed edit, but from the markup rather than from a cell editor,
+    -- and it is the one write that used to leave the old text on screen.
+
+    window\exec_js "nui.set('dbc_resolver', true)"
+
+    link = window\eval "(() => {
+      const column = (nui.get('dbc_columns') || []).find((c) => c.foreign)
+      return column ? column.index : 0
+    })()"
+
+    -- The cell reads as the id alone, or as the id with the row it points at
+    -- beside it when names are on. Either form is that id and not the one
+    -- that was there before.
+    reads_as = (text, id) -> text == id or (text\sub 1, #id + 2) == "#{id} ("
+
+    -- The row above was left holding a refused write, so this works on the
+    -- one below it: what is being covered is the picker, not what the last
+    -- section left behind.
+    before = value_at 2, link
+
+    choices = -> window\eval "document.querySelectorAll('.dbc-choice').length"
+
+    window\exec_js "(() => {
+      const g = window.__grid()
+      const el = g.getRow(2).getCell('c#{link}').getElement()
+      el.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
+    })()"
+
+    t.check "editing a column that points elsewhere offers the rows it can point at",
+      (t.wait_until -> choices! > 0), tostring choices!
+
+    -- Any row but the one already in the cell, so that a cell which never
+    -- changed cannot pass for one that did.
+    chosen = window\eval "(() => {
+      const before = #{json.encode before}
+      for (const el of document.querySelectorAll('.dbc-choice')) {
+        const id = el.querySelector('.dbc-choice-id').textContent.trim()
+        if (id !== before) { el.click(); return id }
+      }
+      return ''
+    })()"
+
+    t.check "and one of them can be picked",
+      chosen != "" and chosen != before,
+      "#{tostring chosen} against #{tostring before}"
+
+    t.check "the value reaches the record",
+      (t.wait_until -> reads_as (value_at 2, link), chosen),
+      "#{value_at 2, link} against #{chosen}"
+
+    -- What there is to look at. The record took the new value even with the
+    -- bug this covers; the cell went on drawing the old one until a reload.
+    seen = -> window\eval "(() => {
+      const g = window.__grid && window.__grid()
+      const row = g && g.getRow(2)
+      const cell = row && row.getCell('c#{link}')
+      return cell ? cell.getElement().textContent.trim() : ''
+    })()"
+
+    t.check "and the cell on screen says so, with nothing reloaded",
+      (t.wait_until -> reads_as seen!, chosen), "#{seen!} against #{chosen}"
+
+    t.check "and the list closed behind it",
+      (t.wait_until -> (window\eval "nui.get('dbc_picker').table") == ""),
+      tostring window\eval "nui.get('dbc_picker').table"
+
+    window\exec_js "nui.set('dbc_resolver', false)"
+
     window\exec_js "[...document.querySelectorAll('.dbc-table')]
       .find(el => el.innerText.trim() === 'ItemBagFamily').click()"
     t.wait_until -> (window\eval "nui.get('dbc_open')") == "ItemBagFamily"

@@ -484,6 +484,21 @@ M.mount = (window, state) ->
         }
       }
 
+      // Taking a value from the reference list.
+      //
+      // Exposed, because the choice is made in the page's own markup, which
+      // cannot reach the helpers in this scope. It writes and applies, so a
+      // value arrives in a cell one way rather than two: the markup used to
+      // invoke `dbc:set` and drop the answer, and the cell went on showing the
+      // old text until a reload or the changed-rows view forced a redraw.
+      window.dbcChoose = async (row, column, value) => {
+        const answer = await neutrino.invoke('dbc:set', {
+          row: row, column: column, value: String(value),
+        })
+
+        if (answer && answer.row) dbcApply([answer.row])
+      }
+
       const dbcColumns = (columns) => {
         const defs = []
 

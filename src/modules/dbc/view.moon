@@ -289,9 +289,8 @@ GRID = [==[
     <div class="max-h-56 overflow-y-auto" data-for="choice in dbc_choices">
       <template>
         <button type="button" class="dbc-choice"
-                data-on-click="neutrino.invoke('dbc:set', {
-                    row: dbc_picker.row, column: dbc_picker.column,
-                    value: String(choice.id) });
+                data-on-click="window.dbcChoose(dbc_picker.row,
+                    dbc_picker.column, choice.id);
                   dbc_picker = { row: 0, column: 0, table: '', label: '' }">
           <span class="dbc-choice-id" data-text="choice.id"></span>
           <span class="truncate" data-text="choice.label"></span>

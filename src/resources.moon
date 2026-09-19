@@ -6,9 +6,14 @@
 -- string. Kept as Lua long strings they are none of those things, and a
 -- mistake in one is found by running the application.
 --
--- They are read from the build rather than compiled into it, so `paths.resolve`
--- is what finds them - `dist/` in development, the install root when packaged,
--- and nothing above here has to know which.
+-- They are read from the build rather than compiled into it, so where they are
+-- is where the Lua tree is. That is not the application root: in development
+-- the two are the same folder, and a package puts the tree under `app/` beside
+-- `static/` and `bin/`. Resolving against the root works in exactly one of
+-- those, and the one it fails in is the one nobody runs until the end.
+--
+-- So it is derived rather than assumed. This file compiles to the top of that
+-- tree in both layouts, and it can say where it was loaded from.
 ---@module resources
 
 Neutrino = require "neutrino"
@@ -18,6 +23,14 @@ fs = Neutrino.fs
 paths = Neutrino.paths
 
 M = {}
+
+--- The folder the application's Lua was loaded from.
+---@return string
+---@private
+tree = ->
+  source = debug.getinfo(1, "S").source or ""
+  folder = source\match "^@(.*)[/\\][^/\\]+$"
+  folder and (folder\gsub "\\", "/") or nil
 
 -- Read once, compiled once. The same bytes produce the same template every
 -- time, and none of these files changes while the application is running.
@@ -31,9 +44,28 @@ M.text = (relative) ->
   cached = texts[relative]
   return cached if cached
 
-  full = paths.resolve relative
-  body, err = fs.read full, true
-  error "resource #{relative}: #{err or "not found"} (#{full})" unless body
+  -- The Lua tree first, then the application root. Both are named in the
+  -- failure, because "not found" without the paths tried is the start of the
+  -- search rather than the end of it.
+  tried = {}
+  found = nil
+
+  for base in *{ tree!, paths.root }
+    continue unless base
+
+    candidate = "#{base}/#{relative}"
+    table.insert tried, candidate
+
+    if fs.is_file candidate
+      found = candidate
+      break
+
+  unless found
+    error "resource #{relative} is not there. Looked in:
+      #{table.concat tried, ", "}"
+
+  body, err = fs.read found, true
+  error "resource #{relative}: #{err or "could not be read"} (#{found})" unless body
 
   texts[relative] = body
   body
